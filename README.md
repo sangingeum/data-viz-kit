@@ -6,11 +6,6 @@ spreadsheet (Excel) and web-scraping utilities.
 
 Requires **Python 3.12** (`>=3.12,<3.13`).
 
-## Purpose
-
-This toolkit is intended for migration to an **air-gapped environment**.
-Migration itself is handled by the owner; this repository deliberately
-contains no offline-install or wheelhouse instructions or artifacts.
 
 ## Interactive timeline viewer
 
