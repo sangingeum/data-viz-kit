@@ -68,28 +68,29 @@ def make_scatter(
 ):
     """Return a plotly scatter figure (2-D, or 3-D when *z_col* is given)."""
     coords = [x_col, y_col] + ([z_col] if z_col else [])
+    # Columns surfaced in the hover tooltip: all coordinates + timestamp + identifier.
+    custom_cols = coords + [time_col, "_identifier"]
     if z_col:
         fig = px.scatter_3d(
             df, x=x_col, y=y_col, z=z_col, color="_identifier", symbol="_identifier",
-            hover_data=coords + [time_col], title=title,
+            custom_data=custom_cols, hover_data=[], title=title,
         )
     else:
         fig = px.scatter(
             df, x=x_col, y=y_col, color="_identifier", symbol="_identifier",
-            hover_data=coords + [time_col], title=title,
+            custom_data=custom_cols, hover_data=[], title=title,
         )
     fig.update_traces(
         selector=dict(mode="markers"),
         marker=dict(size=4, opacity=0.75),
         mode="markers",
     )
-    # Exact hover: identifier + time + all three coordinates.
-    custom = coords + [time_col, "_identifier"]
-    hover = "<b>%{customdata[-1]}</b><br>" + "<br>".join(
-        f"{c} = %{{customdata[{i}]}}"
-        for i, c in enumerate(coords + [time_col])
+    # Exact hover: identifier + time + all coordinates, via customdata columns.
+    idx = {c: i for i, c in enumerate(custom_cols)}
+    hover = f"<b>%{{customdata[{idx['_identifier']}]}}</b><br>" + "<br>".join(
+        f"{c} = %{{customdata[{idx[c]}]}}" for c in coords + [time_col]
     )
-    fig.update_traces(customdata=custom, hovertemplate=hover + "<extra></extra>")
+    fig.update_traces(hovertemplate=hover + "<extra></extra>")
     fig.update_layout(legend_title_text="Identifier", margin=dict(l=10, r=10, t=40, b=10))
     if identifiers and len(identifiers) > 10:
         pass  # plotly colours handle many series fine
