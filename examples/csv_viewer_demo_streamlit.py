@@ -1,10 +1,20 @@
-"""Demo: Streamlit CSV viewer.
+"""Demo: Streamlit CSV coordinate viewer — full parity with csv_viewer_demo.py.
 
-Streamlit version of ``csv_viewer_demo.py``.  Upload a CSV (or use the bundled
-``examples/sample_data.csv``), pick the timestamp and value columns, and drag
-an interactive ``[t1, t2]`` range slider to window the data.  The filtered
-series is rendered with ``st.line_chart`` and the filtered rows with
-``st.dataframe``.
+Streamlit version of ``csv_viewer_demo.py``.  Load the bundled
+``examples/sample_data.csv`` (or upload a CSV) and get the same 2x2 plot grid
+as the matplotlib viewer:
+
+* 3-D scatter of the N/U/E coordinates
+* 2-D scatters N–U, N–E, E–U
+
+Charts are rendered with **plotly** (``st.plotly_chart``) so native hover
+tooltips work — hovering a point shows the identifier, the exact timestamp,
+and the exact N/U/E values.  Identifier selection (streamlit multiselect,
+default: all selected) replaces the matplotlib checkboxes, and a ``[t1, t2]``
+range slider windows the data.  Column names (timestamp, identifiers, N/U/E
+coordinates) are configurable in the sidebar, mirroring the
+``--time-col/--id-cols/--n-col/--u-col/--e-col`` CLI options of the
+matplotlib demo.
 
 Run with::
 
@@ -14,12 +24,27 @@ Run with::
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import pandas as pd
+import plotly.express as px
 import streamlit as st
 
+from data_viz_kit.csv_viewer import load_csv  # noqa: F401  (reuse-style reference)
+
 SAMPLE_CSV: Path = Path(__file__).resolve().parent / "sample_data.csv"
+
+
+def build_identifier(df: pd.DataFrame, id_cols: list[str]) -> pd.Series:
+    """Join *id_cols* with ``'+'`` into an ``_identifier`` series.
+
+    Mirrors ``data_viz_kit.csv_viewer.load_csv`` identifier building.
+    """
+    ident = cast(pd.Series, df[id_cols[0]].astype(str))
+    for col in id_cols[1:]:
+        ident = ident + "+" + df[col].astype(str)
+    return ident
 
 
 def filter_time_window(
@@ -32,12 +57,53 @@ def filter_time_window(
     return df.loc[mask]
 
 
+def make_scatter(
+    df: pd.DataFrame,
+    identifiers: list[str],
+    x_col: str,
+    y_col: str,
+    z_col: str | None,
+    time_col: str,
+    title: str,
+):
+    """Return a plotly scatter figure (2-D, or 3-D when *z_col* is given)."""
+    coords = [x_col, y_col] + ([z_col] if z_col else [])
+    if z_col:
+        fig = px.scatter_3d(
+            df, x=x_col, y=y_col, z=z_col, color="_identifier", symbol="_identifier",
+            hover_data=coords + [time_col], title=title,
+        )
+    else:
+        fig = px.scatter(
+            df, x=x_col, y=y_col, color="_identifier", symbol="_identifier",
+            hover_data=coords + [time_col], title=title,
+        )
+    fig.update_traces(
+        selector=dict(mode="markers"),
+        marker=dict(size=4, opacity=0.75),
+        mode="markers",
+    )
+    # Exact hover: identifier + time + all three coordinates.
+    custom = coords + [time_col, "_identifier"]
+    hover = "<b>%{customdata[-1]}</b><br>" + "<br>".join(
+        f"{c} = %{{customdata[{i}]}}"
+        for i, c in enumerate(coords + [time_col])
+    )
+    fig.update_traces(customdata=custom, hovertemplate=hover + "<extra></extra>")
+    fig.update_layout(legend_title_text="Identifier", margin=dict(l=10, r=10, t=40, b=10))
+    if identifiers and len(identifiers) > 10:
+        pass  # plotly colours handle many series fine
+    return fig
+
+
 def main() -> None:
     st.set_page_config(page_title="CSV Viewer (Streamlit)", layout="wide")
     st.title("CSV Coordinate Viewer — Streamlit")
     st.caption(
-        "Streamlit port of `csv_viewer_demo.py`: upload a CSV, select the "
-        "timestamp and value columns, and window the data with a time-range slider."
+        "Full-parity Streamlit port of `csv_viewer_demo.py`: 2x2 scatter grid "
+        "(3D + N–U, N–E, E–U) with plotly hover tooltips (identifier + exact "
+        "time + exact N/U/E), identifier multiselect, and a `[t1, t2]` range "
+        "slider."
     )
 
     # ---- data source ------------------------------------------------------
@@ -60,33 +126,63 @@ def main() -> None:
     if df.empty:
         st.warning("The CSV contains no data rows.")
         st.stop()
-
-    # ---- column selection (timestamp + value) ------------------------------
     columns = list(df.columns)
+
+    # ---- column configuration (mirrors csv_viewer_demo.py CLI args) -------
     default_time = "Timestamp" if "Timestamp" in columns else columns[0]
     time_col = st.sidebar.selectbox(
-        "Timestamp column", columns, index=columns.index(default_time)
+        "Timestamp column (--time-col)", columns, index=columns.index(default_time)
     )
 
+    id_col_default = [c for c in ("station", "sensor") if c in columns]
+    if not id_col_default:
+        id_col_default = [c for c in columns if c != time_col][:1]
+    id_cols = st.sidebar.multiselect(
+        "Identifier columns (--id-cols, joined with '+')",
+        [c for c in columns if c != time_col],
+        default=id_col_default,
+    )
+    if not id_cols:
+        st.info("Select at least one identifier column.")
+        st.stop()
+
+    remaining = [c for c in columns if c not in id_cols and c != time_col]
+    coord_defaults = [c for c in ("N", "U", "E") if c in remaining] or remaining[:3]
+    coord_defaults = coord_defaults[:3] if len(coord_defaults) >= 3 else remaining[:3]
+    if len(remaining) < 3:
+        st.warning("Need at least three coordinate columns (N/U/E equivalents).")
+        st.stop()
+    n_col = st.sidebar.selectbox(
+        "N coordinate column (--n-col)", remaining, index=remaining.index(coord_defaults[0])
+    )
+    u_col = st.sidebar.selectbox(
+        "U coordinate column (--u-col)",
+        remaining,
+        index=remaining.index(coord_defaults[1]),
+    )
+    e_col = st.sidebar.selectbox(
+        "E coordinate column (--e-col)",
+        remaining,
+        index=remaining.index(coord_defaults[2]),
+    )
+    coord_cols = [n_col, u_col, e_col]
+
+    # ---- identifier column -------------------------------------------------
+    df = df.copy()
+    df["_identifier"] = build_identifier(df, id_cols)
+    identifiers = sorted(df["_identifier"].unique())
+
+    selected_ids = st.sidebar.multiselect(
+        "Identifiers", identifiers, default=identifiers
+    )
+
+    # ---- time window -------------------------------------------------------
     times = pd.to_numeric(df[time_col], errors="coerce").astype(float).to_numpy()
     finite_times = times[np.isfinite(times)]
     if finite_times.size == 0:
         st.warning(f"Column `{time_col}` has no numeric (finite) values.")
         st.stop()
     data_min, data_max = float(finite_times.min()), float(finite_times.max())
-
-    numeric_cols = [
-        c for c in columns if c != time_col and pd.api.types.is_numeric_dtype(df[c])
-    ]
-    default_values = [c for c in ("N", "U", "E") if c in numeric_cols] or numeric_cols[:1]
-    value_cols = st.sidebar.multiselect(
-        "Value column(s)", numeric_cols, default=default_values
-    )
-    if not value_cols:
-        st.info("Select at least one value column to plot.")
-        st.stop()
-
-    # ---- t1/t2 time-range windowing (range slider) -------------------------
     t1, t2 = st.sidebar.slider(
         "Time range [t1, t2]",
         min_value=data_min,
@@ -97,16 +193,50 @@ def main() -> None:
 
     # ---- filter ------------------------------------------------------------
     filtered = filter_time_window(df, time_col, t1, t2)
+    filtered = filtered[filtered["_identifier"].isin(selected_ids)]
     st.subheader(
-        f"{len(filtered)} / {len(df)} rows in [{min(t1, t2):.1f}, {max(t1, t2):.1f}]"
+        f"{len(filtered)} / {len(df)} rows in "
+        f"[{min(t1, t2):.1f}, {max(t1, t2):.1f}] — {len(selected_ids)}/{len(identifiers)} identifiers"
     )
 
-    # ---- line chart of filtered series -------------------------------------
     if filtered.empty:
-        st.warning("No rows fall inside the selected time window.")
+        st.warning("No rows match the selected time window and identifiers.")
     else:
-        chart_df = filtered.set_index(time_col)[value_cols].sort_index()
-        st.line_chart(chart_df)
+        # ---- 2x2 plot grid: 3D + N–U + N–E + E–U --------------------------
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.plotly_chart(
+                make_scatter(
+                    filtered, identifiers, n_col, u_col, e_col, time_col,
+                    f"3D {n_col}–{u_col}–{e_col}",
+                ),
+                use_container_width=True,
+            )
+        with col_b:
+            st.plotly_chart(
+                make_scatter(
+                    filtered, identifiers, n_col, u_col, None, time_col,
+                    f"{n_col}–{u_col}",
+                ),
+                use_container_width=True,
+            )
+        col_c, col_d = st.columns(2)
+        with col_c:
+            st.plotly_chart(
+                make_scatter(
+                    filtered, identifiers, n_col, e_col, None, time_col,
+                    f"{n_col}–{e_col}",
+                ),
+                use_container_width=True,
+            )
+        with col_d:
+            st.plotly_chart(
+                make_scatter(
+                    filtered, identifiers, e_col, u_col, None, time_col,
+                    f"{e_col}–{u_col}",
+                ),
+                use_container_width=True,
+            )
 
     # ---- table of filtered rows --------------------------------------------
     st.subheader("Filtered rows")

@@ -22,8 +22,15 @@ import pandas as pd
 from data_viz_kit.csv_viewer import load_csv, view_csv
 
 
-def make_sample_csv(path: Path, n: int = 300, seed: int = 42) -> Path:
+def make_sample_csv(
+    path: Path,
+    n: int = 300,
+    seed: int = 42,
+    time_col: str = "Timestamp",
+    coord_cols: tuple[str, str, str] = ("N", "U", "E"),
+) -> Path:
     """Write a sample CSV with 3 identifiers and return the path."""
+    c_n, c_u, c_e = coord_cols
     rng = np.random.default_rng(seed)
     rows: list[dict] = []
     t0 = 1725270000.0  # 2024-09-02 ~09:00 UTC
@@ -35,10 +42,10 @@ def make_sample_csv(path: Path, n: int = 300, seed: int = 42) -> Path:
                 {
                     "station": station,
                     "sensor": sensor,
-                    "Timestamp": round(t, 3),
-                    "N": round(100 + np.sin((t - t0) / 600) * 5 + rng.normal(0, 0.3), 4),
-                    "U": round(50 + np.cos((t - t0) / 400) * 2 + rng.normal(0, 0.1), 4),
-                    "E": round(200 + (t - t0) * 0.005 + rng.normal(0, 0.5), 4),
+                    time_col: round(t, 3),
+                    c_n: round(100 + np.sin((t - t0) / 600) * 5 + rng.normal(0, 0.3), 4),
+                    c_u: round(50 + np.cos((t - t0) / 400) * 2 + rng.normal(0, 0.1), 4),
+                    c_e: round(200 + (t - t0) * 0.005 + rng.normal(0, 0.5), 4),
                 }
             )
 
@@ -58,32 +65,49 @@ def main() -> int:
         default=["station", "sensor"],
         help="column names to use as identifiers",
     )
+    parser.add_argument(
+        "--time-col", default="Timestamp", help="name of the timestamp column"
+    )
+    parser.add_argument("--n-col", default="N", help="name of the north coordinate column")
+    parser.add_argument("--u-col", default="U", help="name of the up coordinate column")
+    parser.add_argument("--e-col", default="E", help="name of the east coordinate column")
     args = parser.parse_args()
+    coord_cols = (args.n_col, args.u_col, args.e_col)
 
     if args.csv:
         csv_path = Path(args.csv)
-        df = load_csv(csv_path, id_cols=args.id_cols)
+        df = load_csv(
+            csv_path, id_cols=args.id_cols, time_col=args.time_col, coord_cols=coord_cols
+        )
     else:
         csv_path = Path(__file__).resolve().parent / "sample_data.csv"
-        make_sample_csv(csv_path)
-        df = load_csv(csv_path, id_cols=args.id_cols)
+        make_sample_csv(
+            csv_path,
+            time_col=args.time_col,
+            coord_cols=coord_cols,
+        )
+        df = load_csv(
+            csv_path, id_cols=args.id_cols, time_col=args.time_col, coord_cols=coord_cols
+        )
 
     print(
         f"dataset: {len(df)} rows, "
         f"{len(df['_identifier'].unique())} identifiers, "
-        f"timestamps {df['Timestamp'].min():.1f} .. {df['Timestamp'].max():.1f} (epoch s)"
+        f"timestamps {df[args.time_col].min():.1f} .. {df[args.time_col].max():.1f} (epoch s)"
     )
 
     if args.headless:
         fig, viewer = view_csv(
             df,
             id_cols=args.id_cols,
+            time_col=args.time_col,
+            coord_cols=coord_cols,
             title="CSV Coordinate Viewer (headless)",
             block=False,
         )
         # Narrow the time window to prove sliders work.
-        lo = df["Timestamp"].min() + 600.0
-        hi = df["Timestamp"].max() - 600.0
+        lo = df[args.time_col].min() + 600.0
+        hi = df[args.time_col].max() - 600.0
         viewer["sliders"]["t1"].set_val(lo)  # type: ignore[index]
         viewer["sliders"]["t2"].set_val(hi)  # type: ignore[index]
         fig.canvas.draw()
@@ -96,6 +120,8 @@ def main() -> int:
     view_csv(
         df,
         id_cols=args.id_cols,
+        time_col=args.time_col,
+        coord_cols=coord_cols,
         title="CSV Coordinate Viewer — drag t1/t2 sliders, toggle checkboxes, hover points",
     )
     return 0

@@ -65,26 +65,32 @@ uv run python scripts/smoke_check.py         # imports & exercises every depende
   `csv_viewer.py` = CSV coordinate viewer)
 - `examples/example_analysis.py` — headless (Agg) matplotlib demo
 - `examples/timestamp_viewer_demo.py` — timestamped-data demo (interactive + `--headless` mode)
-- `examples/csv_viewer_demo.py` — matplotlib CSV viewer demo (uses `examples/sample_data.csv`)
+- `examples/csv_viewer_demo.py` — matplotlib CSV viewer demo (uses `examples/sample_data.csv`;
+  column names configurable via `--time-col/--id-cols/--n-col/--u-col/--e-col`)
 - `examples/csv_viewer_demo_streamlit.py` — Streamlit version of the CSV viewer demo
 - `scripts/smoke_check.py` — dependency smoke test
 - `tests/` — pytest suite
 
 ## Streamlit CSV viewer
 
-`examples/csv_viewer_demo_streamlit.py` is a Streamlit port of
+`examples/csv_viewer_demo_streamlit.py` is a full-parity Streamlit port of
 `examples/csv_viewer_demo.py`: upload a CSV (or load the bundled
-`examples/sample_data.csv`), pick the timestamp and value columns, and drag an
-interactive `[t1, t2]` range slider to window the data — only rows inside the
-window are plotted (`st.line_chart`) and tabulated (`st.dataframe`).
+`examples/sample_data.csv`), pick the timestamp, identifier, and N/U/E
+coordinate columns in the sidebar (auto-detected defaults mirroring the
+matplotlib demo's CLI args), toggle identifiers with a multiselect, and drag
+an interactive `[t1, t2]` range slider to window the data. The same 2x2 plot
+grid is rendered (3D N/U/E scatter + N–U, N–E, E–U scatters) using **plotly**
+(`st.plotly_chart`), and the filtered rows are tabulated with
+`st.dataframe`.
 
 ```bash
 uv run streamlit run examples/csv_viewer_demo_streamlit.py --server.headless true
 # then open http://localhost:8501
 ```
 
-Note: Streamlit charts do not support matplotlib-style hover tooltips; exact
-values are available in the filtered-data table.
+Note: Streamlit cannot use matplotlib hover annotations, so the plotly charts
+provide equivalent native hover tooltips instead — hovering a point shows the
+identifier, the exact timestamp, and the exact N/U/E values.
 
 ## License
 
