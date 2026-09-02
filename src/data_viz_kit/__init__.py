@@ -12,6 +12,14 @@ import numpy as np
 import pandas as pd
 
 
+from data_viz_kit.timeline_viewer import (
+    ensure_interactive_backend,
+    filter_time_range,
+    format_tooltip,
+    view_time_range,
+)
+
+
 @dataclass
 class SummaryStats:
     """Summary statistics for a numeric series."""
