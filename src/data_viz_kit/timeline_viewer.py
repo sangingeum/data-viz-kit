@@ -47,8 +47,6 @@ def filter_time_range(
         raise KeyError(f"time column {time_col!r} not in DataFrame")
     import numpy as np
 
-    if time_col not in df.columns:
-        raise KeyError(f"time column {time_col!r} not in DataFrame")
     times = np.asarray(pd.to_numeric(pd.Series(df[time_col]), errors="coerce"), dtype=float)
     finite = np.isfinite(times)
     if t1 is None:

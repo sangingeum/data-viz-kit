@@ -19,6 +19,11 @@ from data_viz_kit.timeline_viewer import (
     view_time_range,
 )
 
+from data_viz_kit.csv_viewer import (
+    load_csv,
+    view_csv,
+)
+
 
 @dataclass
 class SummaryStats:
