@@ -1,0 +1,47 @@
+[project]
+name = "data-viz-kit"
+version = "2.0.0"
+description = "Data analysis & visualization toolkit for air-gapped migration"
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+license = { file = "LICENSE" }
+authors = [{ name = "keum" }]
+dependencies = [
+    # x86-64-v1 host: numpy>=2 wheels require x86-64-v2 baseline (manylinux_2_34+),
+    # so pin numpy<2 for compatible wheels; polars[rtcompat] likewise selects
+    # runtime-compatible (non-AVX2-only) wheels for this older CPU baseline.
+    "numpy<2",
+    "polars[rtcompat]",
+    "pandas",
+    "pyarrow",
+    "scipy",
+    "statsmodels",
+    "matplotlib",
+    "seaborn",
+    "plotly",
+    "openpyxl",
+    "xlsxwriter",
+    "tabulate",
+    "beautifulsoup4",
+    "lxml",
+    "requests",
+    "jupyterlab",
+    "ipykernel",
+    "scikit-learn",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-cov",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/data_viz_kit"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
