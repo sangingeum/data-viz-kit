@@ -61,11 +61,30 @@ uv run python scripts/smoke_check.py         # imports & exercises every depende
 
 ## Layout
 
-- `src/data_viz_kit/` — library code (`timeline_viewer.py` = interactive viewer)
+- `src/data_viz_kit/` — library code (`timeline_viewer.py` = interactive viewer,
+  `csv_viewer.py` = CSV coordinate viewer)
 - `examples/example_analysis.py` — headless (Agg) matplotlib demo
 - `examples/timestamp_viewer_demo.py` — timestamped-data demo (interactive + `--headless` mode)
+- `examples/csv_viewer_demo.py` — matplotlib CSV viewer demo (uses `examples/sample_data.csv`)
+- `examples/csv_viewer_demo_streamlit.py` — Streamlit version of the CSV viewer demo
 - `scripts/smoke_check.py` — dependency smoke test
 - `tests/` — pytest suite
+
+## Streamlit CSV viewer
+
+`examples/csv_viewer_demo_streamlit.py` is a Streamlit port of
+`examples/csv_viewer_demo.py`: upload a CSV (or load the bundled
+`examples/sample_data.csv`), pick the timestamp and value columns, and drag an
+interactive `[t1, t2]` range slider to window the data — only rows inside the
+window are plotted (`st.line_chart`) and tabulated (`st.dataframe`).
+
+```bash
+uv run streamlit run examples/csv_viewer_demo_streamlit.py --server.headless true
+# then open http://localhost:8501
+```
+
+Note: Streamlit charts do not support matplotlib-style hover tooltips; exact
+values are available in the filtered-data table.
 
 ## License
 

@@ -28,6 +28,7 @@ dependencies = [
     "jupyterlab",
     "ipykernel",
     "scikit-learn",
+    "streamlit",
 ]
 
 [dependency-groups]
