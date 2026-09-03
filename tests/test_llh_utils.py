@@ -17,8 +17,9 @@ from llh_utils import (  # noqa: E402
     coerce_numeric,
     detect_llh_layout,
     dms_to_decimal_degrees,
+    make_flat_map_figure,
     make_globe_figure,
-    make_time_scatter,
+    make_trajectory_figure,
     sample_llh_3col,
     sample_llh_7col,
 )
@@ -221,11 +222,12 @@ def test_globe_figure_scattergeo_customdata_is_per_point() -> None:
     assert traces, "expected a scattergeo trace"
     for trace in traces:
         cd = np.asarray(trace.customdata)
-        assert cd.ndim == 2 and cd.shape[0] == len(df), (
+        assert cd.ndim == 2 and cd.shape[0] == len(trace.lat), (
             "customdata must be per-point rows"
         )
         # lat column of customdata must equal the actual point values
-        assert np.allclose(cd[:, 0].astype(float), df["lat_deg"].to_numpy())
+        assert np.allclose(cd[:, 0].astype(float),
+                           np.asarray(trace.lat, dtype=float))
         # no customdata cell may be a bare column name (the old bug)
         names = {"lat_deg", "lon_deg", "alt_m", "Timestamp",
                  "_utc_time", "_identifier"}
@@ -233,26 +235,99 @@ def test_globe_figure_scattergeo_customdata_is_per_point() -> None:
         assert not (flat & names), "column names leaked into customdata"
 
 
+def test_trajectory_traces_are_lines_sorted_by_time() -> None:
+    """Every identifier draws a lines+markers path ordered by timestamp."""
+    df = _figure_df().sort_values("Timestamp", ascending=False)  # shuffled input
+    fig = make_globe_figure(df, sorted(df["_identifier"].unique()), "Timestamp",
+                            "globe", color_by_altitude=False)
+    traces = [t for t in fig.data if t.type == "scattergeo"]
+    assert traces
+    for trace in traces:
+        assert "lines" in trace.mode, "trajectory needs line segments"
+        ts = pd.to_datetime(np.asarray(trace.customdata)[:, 3], unit="s")
+        assert (np.diff(ts.astype(np.int64)) >= np.timedelta64(0, "s")).all(), (
+            "trace points must be monotonic non-decreasing in time"
+        )
+
+
+def test_trajectory_color_by_altitude_toggle() -> None:
+    """Toggle ON: markers carry a Viridis colorbar; OFF: identifier-coloured."""
+    df = _figure_df()
+    ids = sorted(df["_identifier"].unique())
+    fig_on = make_globe_figure(df, ids, "Timestamp", "globe",
+                               color_by_altitude=True)
+    marker_traces = [t for t in fig_on.data if t.mode == "markers"]
+    assert marker_traces, "altitude mode adds a marker-only trace per identifier"
+    assert any(
+        t.marker.showscale and t.marker.colorscale is not None
+        for t in marker_traces
+    ), "expected a colorscale + colorbar on altitude-coloured markers"
+    line_traces = [t for t in fig_on.data if "lines" in (t.mode or "")]
+    assert line_traces, "line segments always present (in line traces)"
+    for t in line_traces:
+        assert t.mode == "lines"  # lines live in identifier-coloured traces
+
+    fig_off = make_globe_figure(df, ids, "Timestamp", "globe",
+                                color_by_altitude=False)
+    for t in fig_off.data:
+        assert t.mode == "lines+markers"
+        assert not t.marker.showscale
+
+
+def test_trajectory_hover_template() -> None:
+    """Hover shows identifier, timestamp, UTC, and exact lat/lon/alt."""
+    df = _figure_df()
+    fig = make_trajectory_figure(df, sorted(df["_identifier"].unique()),
+                                 "Timestamp", "g")
+    tmpl = [t.hovertemplate for t in fig.data if t.hovertemplate]
+    assert tmpl
+    for t in tmpl:
+        assert "_identifier" not in t  # template references indices, not names
+        assert "UTC = %{customdata[4]}" in t
+        assert "alt_m = %{customdata[2]}" in t
+    line_traces = [t for t in fig.data if t.mode == "lines"]
+    assert all(t.hoverinfo == "skip" for t in line_traces)
+
+
+def test_trajectory_fit_bounds_zooms_to_data() -> None:
+    df = _figure_df()
+    fig = make_globe_figure(df, [], "Timestamp", "g", fit_bounds=True)
+    geo = fig.layout.geo
+    assert geo.center is not None
+    assert geo.projection.scale and geo.projection.scale > 1, "auto-zoomed"
+    assert abs(geo.center.lat - df["lat_deg"].mean()) < 1.0
+
+    fig_plain = make_globe_figure(df, [], "Timestamp", "g", fit_bounds=False)
+    assert fig_plain.layout.geo.projection.scale in (None, 1)
+
+
+def test_trajectory_projection_selectable() -> None:
+    df = _figure_df()
+    for proj in ("orthographic", "equirectangular", "natural earth"):
+        fig = make_trajectory_figure(df, [], "Timestamp", "g", projection=proj)
+        assert fig.layout.geo.projection.type == proj
+
+
+def test_flat_map_figure_is_equirectangular_no_colorbar() -> None:
+    df = _figure_df()
+    fig = make_flat_map_figure(df, sorted(df["_identifier"].unique()),
+                               "Timestamp", "flat")
+    assert fig.layout.geo.projection.type == "equirectangular"
+    assert not any(t.marker.showscale for t in fig.data)
+    assert any("lines" in t.mode for t in fig.data)
+
+
 def test_globe_figure_layout_and_hover() -> None:
     df = _figure_df()
-    fig = make_globe_figure(df, [], "Timestamp", "globe")
+    fig = make_globe_figure(df, sorted(df["_identifier"].unique()), "Timestamp",
+                            "globe")
     geo = fig.layout.geo
     assert geo.projection.type == "orthographic"
     assert geo.showcountries and geo.showcoastlines and geo.showland
-    tmpl = fig.data[0].hovertemplate
+    tmpl = [t.hovertemplate for t in fig.data if t.hovertemplate][0]
     assert "_identifier" not in tmpl  # template references indices, not names
     assert "customdata[5]" in tmpl  # identifier slot
     assert "UTC = %{customdata[4]}" in tmpl  # utc datetime slot
     utc = df.assign(_utc_time=pd.to_datetime(df["Timestamp"], unit="s", utc=True)
                     .astype(str))
     assert utc["_utc_time"].str.contains(r"\d{4}-\d{2}-\d{2}").all()
-
-
-def test_time_scatter_customdata_per_point() -> None:
-    df = _figure_df()
-    fig = make_time_scatter(df, [], "lat_deg", "Timestamp", "lat vs time")
-    for trace in fig.data:
-        cd = np.asarray(trace.customdata)
-        assert cd.ndim == 2
-        vals = cd[:, 1].astype(float)
-        assert set(np.round(vals, 6)).issubset(set(np.round(df["lat_deg"], 6)))

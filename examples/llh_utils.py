@@ -20,6 +20,7 @@ from typing import cast
 import numpy as np
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 
 COORD_MODES: list[str] = ["NUE", "LLH"]
 
@@ -158,93 +159,183 @@ def build_llh(
     return out, bad
 
 
+def _utc_time_series(df: pd.DataFrame, time_col: str) -> pd.Series:
+    """UTC datetime strings derived from *time_col* (numeric epoch seconds)."""
+    ts = cast(pd.Series, pd.to_numeric(df[time_col], errors="coerce"))
+    return cast(pd.Series, pd.to_datetime(ts, unit="s", utc=True)).astype(str)
+
+
+#: per-point customdata columns shared by every trajectory figure
+_TRAJECTORY_CUSTOM_COLS = ["lat_deg", "lon_deg", "alt_m"]
+
+
+def _trajectory_hover_template(time_col: str, custom_cols: list[str]) -> str:
+    """Hover template showing identifier, timestamp, UTC time, exact lat/lon/alt."""
+    idx = {c: i for i, c in enumerate(custom_cols)}
+    return (
+        f"<b>%{{customdata[{idx['_identifier']}]}}</b><br>"
+        f"lat_deg = %{{customdata[{idx['lat_deg']}]}}<br>"
+        f"lon_deg = %{{customdata[{idx['lon_deg']}]}}<br>"
+        f"alt_m = %{{customdata[{idx['alt_m']}]}}<br>"
+        f"{time_col} = %{{customdata[{idx[time_col]}]}}<br>"
+        f"UTC = %{{customdata[{idx['_utc_time']}]}}<extra></extra>"
+    )
+
+
+def _fit_geo_layout(
+    fig: "go.Figure",
+    df: pd.DataFrame,
+    projection: str,
+    fit_bounds: bool,
+) -> None:
+    """Zoom the geo view to the filtered data's lat/lon bounding box.
+
+    Orthographic projection supports ``center`` + ``projection.scale``; the
+    flat projections (equirectangular / natural earth) support lat/lon axis
+    ranges.  Padding keeps the outermost points off the plot edge.
+    """
+    geo: dict[str, object] = {
+        "projection_type": projection,
+        "showcountries": True,
+        "showcoastlines": True,
+        "showland": True,
+    }
+    if fit_bounds and not df.empty:
+        lats = df["lat_deg"].dropna().astype(float)
+        lons = df["lon_deg"].dropna().astype(float)
+        if not lats.empty and not lons.empty:
+            lat_pad = max((lats.max() - lats.min()) * 0.15, 0.5)
+            lon_pad = max((lons.max() - lons.min()) * 0.15, 0.5)
+            lat_lo, lat_hi = lats.min() - lat_pad, lats.max() + lat_pad
+            lon_lo, lon_hi = lons.min() - lon_pad, lons.max() + lon_pad
+            center = {"lon": float((lon_lo + lon_hi) / 2.0),
+                      "lat": float((lat_lo + lat_hi) / 2.0)}
+            if projection == "orthographic":
+                span = max(lat_hi - lat_lo, lon_hi - lon_lo, 1e-6)
+                scale = float(min(12.0, max(1.0, 170.0 / span)))
+                geo["center"] = center
+                geo["projection"] = {"type": projection, "scale": scale}
+            else:
+                geo["center"] = center
+                geo["lataxis"] = {"range": [float(lat_lo), float(lat_hi)]}
+                geo["lonaxis"] = {"range": [float(lon_lo), float(lon_hi)]}
+    fig.update_layout(geo=geo)
+
+
+def make_trajectory_figure(
+    df: pd.DataFrame,
+    identifiers: list[str],
+    time_col: str,
+    title: str,
+    color_by_altitude: bool = True,
+    projection: str = "orthographic",
+    fit_bounds: bool = True,
+    show_colorbar: bool = True,
+):
+    """Trajectory viewer figure: one lines+markers scattergeo per identifier.
+
+    Each identifier's points are **sorted by timestamp** before plotting so
+    line segments connect consecutive samples in time order (the flight
+    path).  Lines are always identifier-coloured; when *color_by_altitude*
+    is on, markers are coloured by ``alt_m`` (Viridis colorbar) instead.
+    Hover shows identifier, timestamp, UTC time, and exact lat/lon/alt via
+    **per-point** customdata columns — never a list of names (7df7e70 bug).
+
+    With ``projection="equirectangular"`` and ``show_colorbar=False`` this
+    doubles as the flat top-down map panel.
+    """
+    df = df.copy()
+    df["_utc_time"] = _utc_time_series(df, time_col)
+    custom_cols = _TRAJECTORY_CUSTOM_COLS + [time_col, "_utc_time", "_identifier"]
+    hover = _trajectory_hover_template(time_col, custom_cols)
+    fig = go.Figure()
+    palette = px.colors.qualitative.Plotly
+    alt_min = float(df["alt_m"].min()) if not df.empty else 0.0
+    alt_max = float(df["alt_m"].max()) if not df.empty else 1.0
+    if alt_max <= alt_min:
+        alt_max = alt_min + 1.0
+
+    for k, ident in enumerate(sorted(identifiers)):
+        sub = df[df["_identifier"] == ident].copy()
+        sub = sub.dropna(subset=["lat_deg", "lon_deg"])
+        if sub.empty:
+            continue
+        sub = sub.sort_values(time_col, kind="stable")
+        color = palette[k % len(palette)]
+        cd = sub[custom_cols].to_numpy()
+        if color_by_altitude:
+            # line trace: identifier colour, hover suppressed
+            fig.add_trace(go.Scattergeo(
+                lat=sub["lat_deg"], lon=sub["lon_deg"], mode="lines",
+                name=ident, legendgroup=ident, showlegend=True,
+                line=dict(width=2, color=color),
+                customdata=cd, hoverinfo="skip",
+            ))
+            # marker trace: altitude-coloured, full hover
+            fig.add_trace(go.Scattergeo(
+                lat=sub["lat_deg"], lon=sub["lon_deg"], mode="markers",
+                name=ident, legendgroup=ident, showlegend=False,
+                marker=dict(
+                    size=4, opacity=0.9,
+                    color=sub["alt_m"],
+                    colorscale="Viridis",
+                    cmin=alt_min, cmax=alt_max,
+                    colorbar=dict(title="alt_m") if (show_colorbar and k == 0) else None,
+                    showscale=(show_colorbar and k == 0),
+                ),
+                customdata=cd, hovertemplate=hover,
+            ))
+        else:
+            fig.add_trace(go.Scattergeo(
+                lat=sub["lat_deg"], lon=sub["lon_deg"],
+                mode="lines+markers",
+                name=ident, legendgroup=ident, showlegend=True,
+                line=dict(width=2, color=color),
+                marker=dict(size=4, opacity=0.9, color=color),
+                customdata=cd, hovertemplate=hover,
+            ))
+
+    fig.update_layout(
+        title=title,
+        legend_title_text="Identifier",
+        margin=dict(l=10, r=10, t=40, b=10),
+    )
+    _fit_geo_layout(fig, df, projection, fit_bounds)
+    return fig
+
+
 def make_globe_figure(
     df: pd.DataFrame,
     identifiers: list[str],
     time_col: str,
     title: str,
     color_by_altitude: bool = True,
+    projection: str = "orthographic",
+    fit_bounds: bool = True,
 ):
-    """Interactive orthographic-globe scatter of the converted LLH data.
-
-    Hover keeps identifier + timestamp + exact lat/lon/alt (plus a UTC
-    datetime string when ``_utc_time`` is present), via **per-point**
-    custom_data columns — never a list of names (the 7df7e70 bug).
-    """
-    df = df.copy()
-    if "_utc_time" not in df.columns:
-        ts = cast(pd.Series, pd.to_numeric(df[time_col], errors="coerce"))
-        df["_utc_time"] = cast(
-            pd.Series, pd.to_datetime(ts, unit="s", utc=True)
-        ).astype(str)
-
-    color = "alt_m" if color_by_altitude else "_identifier"
-    custom_cols = ["lat_deg", "lon_deg", "alt_m", time_col, "_utc_time", "_identifier"]
-    fig = px.scatter_geo(
-        df,
-        lat="lat_deg",
-        lon="lon_deg",
-        color=color,
-        custom_data=custom_cols,
-        hover_data=[],
-        title=title,
-        projection="orthographic",
+    """Backwards-compatible alias for :func:`make_trajectory_figure` (globe panel)."""
+    return make_trajectory_figure(
+        df, identifiers, time_col, title,
+        color_by_altitude=color_by_altitude,
+        projection=projection, fit_bounds=fit_bounds,
     )
-    idx = {c: i for i, c in enumerate(custom_cols)}
-    hover = (
-        f"<b>%{{customdata[{idx['_identifier']}]}}</b><br>"
-        f"lat_deg = %{{customdata[{idx['lat_deg']}]}}<br>"
-        f"lon_deg = %{{customdata[{idx['lon_deg']}]}}<br>"
-        f"alt_m = %{{customdata[{idx['alt_m']}]}}<br>"
-        f"{time_col} = %{{customdata[{idx[time_col]}]}}<br>"
-        f"UTC = %{{customdata[{idx['_utc_time']}]}}"
-    )
-    fig.update_traces(
-        selector=dict(type="scattergeo"),
-        marker=dict(size=5, opacity=0.85),
-        hovertemplate=hover + "<extra></extra>",
-    )
-    if not color_by_altitude:
-        fig.update_traces(selector=dict(type="scattergeo"), symbol="_identifier")
-    fig.update_layout(
-        geo=dict(
-            projection_type="orthographic",
-            showcountries=True,
-            showcoastlines=True,
-            showland=True,
-        ),
-        margin=dict(l=10, r=10, t=40, b=10),
-    )
-    return fig
 
 
-def make_time_scatter(
+def make_flat_map_figure(
     df: pd.DataFrame,
     identifiers: list[str],
-    value_col: str,
     time_col: str,
     title: str,
+    color_by_altitude: bool = True,
+    fit_bounds: bool = True,
 ):
-    """2-D parity scatter of *value_col* (lat/lon/alt) vs time."""
-    custom_cols = [time_col, value_col, "_identifier"]
-    fig = px.scatter(
-        df, x=time_col, y=value_col, color="_identifier", symbol="_identifier",
-        custom_data=custom_cols, hover_data=[], title=title,
+    """Flat top-down trajectory map (equirectangular) — second panel."""
+    return make_trajectory_figure(
+        df, identifiers, time_col, title,
+        color_by_altitude=color_by_altitude,
+        projection="equirectangular", fit_bounds=fit_bounds,
+        show_colorbar=False,
     )
-    idx = {c: i for i, c in enumerate(custom_cols)}
-    hover = (
-        f"<b>%{{customdata[{idx['_identifier']}]}}</b><br>"
-        f"{time_col} = %{{customdata[{idx[time_col]}]}}<br>"
-        f"{value_col} = %{{customdata[{idx[value_col]}]}}"
-    )
-    fig.update_traces(
-        selector=dict(mode="markers"),
-        marker=dict(size=4, opacity=0.75),
-        mode="markers",
-        hovertemplate=hover + "<extra></extra>",
-    )
-    fig.update_layout(legend_title_text="Identifier", margin=dict(l=10, r=10, t=40, b=10))
-    return fig
 
 
 def sample_llh_3col() -> pd.DataFrame:

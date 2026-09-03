@@ -115,12 +115,31 @@ warning).
 pre-multiplied by 100. It applies only in the 7-col layout and is disabled
 (greyed out) in 3-col mode.
 
-**LLH visualization** — the primary view is an interactive **globe**
-(`px.scatter_geo`, orthographic projection, countries/coastlines/land shown)
-with altitude as the marker colour scale. Because cross plots are meaningless
-on a globe, the 2x2 grid is replaced by lat-vs-time, lon-vs-time, and
-alt-vs-time scatters. Hover everywhere keeps the identifier, the timestamp,
-its UTC date-time, and the exact converted lat/lon/alt.
+**LLH visualization — trajectory viewer** — the primary view is an aircraft
+**trajectory viewer** built around two panels:
+
+- **Trajectory globe** (left, `px.scatter_geo`-style `lines+markers`
+  scattergeo): one trace per identifier, with line segments connecting points
+  in **timestamp order** so each identifier draws its flight path. Countries,
+  coastlines, and land are shown; a caption reminds you that you can drag to
+  rotate and scroll/mode-bar to zoom.
+- **Top-down trajectory map** (right, equirectangular projection): the classic
+  flat lat-vs-lon view of the same trajectories, same styling.
+
+Readability options in the sidebar:
+
+- **Color markers by altitude** (default ON) — markers are coloured by
+  altitude with a Viridis colorbar while the trajectory lines stay
+  identifier-coloured; OFF colours everything per identifier.
+- **Globe projection** — orthographic (default), equirectangular, or natural
+  earth.
+- **Fit bounds to trajectories** (default ON) — sets the geo center plus
+  projection scale (orthographic) or lat/lon axis ranges (flat projections)
+  from the filtered data's bounding box with padding, so the view auto-zooms
+  to the trajectories instead of the whole Earth.
+
+Hover on any point keeps the identifier, the timestamp, its UTC date-time, and
+the exact converted lat/lon/alt (per-point customdata).
 
 The bundled `examples/sample_data.csv` carries extra LLH columns (3-col
 `Latitude`/`Longitude`/`Altitude_m` and 7-col `LatDeg…LonSec`) around Seoul

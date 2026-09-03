@@ -36,9 +36,11 @@ from data_viz_kit.csv_viewer import load_csv  # noqa: F401  (reuse-style referen
 from llh_utils import (
     build_llh,
     detect_llh_layout,
+    make_flat_map_figure,
     make_globe_figure,
-    make_time_scatter,
 )
+
+PROJECTIONS: list[str] = ["orthographic", "equirectangular", "natural earth"]
 
 SAMPLE_CSV: Path = Path(__file__).resolve().parent / "sample_data.csv"
 
@@ -305,39 +307,53 @@ def main() -> None:
     if filtered.empty:
         st.warning("No rows match the selected time window and identifiers.")
     elif coord_mode == "LLH":
-        # ---- globe + time-series parity grid --------------------------------
+        # ---- LLH trajectory-viewer sidebar options --------------------------
+        color_by_altitude = st.sidebar.toggle(
+            "Color markers by altitude", value=True,
+            help="Marker colour scales with altitude (Viridis colorbar); "
+                 "trajectory lines stay identifier-coloured. When off, "
+                 "everything is identifier-coloured.",
+        )
+        projection = st.sidebar.selectbox(
+            "Globe projection", PROJECTIONS, index=0,
+        )
+        fit_bounds = st.sidebar.toggle(
+            "Fit bounds to trajectories", value=True,
+            help="Zoom the map to the filtered data's lat/lon bounding box "
+                 "instead of showing the whole Earth.",
+        )
+        # ---- globe (left) + flat top-down map (right) ------------------------
         globe_df = filtered.dropna(subset=["lat_deg", "lon_deg"])
-        col_globe, col_side = st.columns(2)
+        col_globe, col_map = st.columns(2)
         with col_globe:
             st.plotly_chart(
                 make_globe_figure(
                     globe_df, identifiers, time_col,
-                    "LLH globe (orthographic) — colour = altitude",
-                    color_by_altitude=True,
+                    f"Trajectory globe ({projection})",
+                    color_by_altitude=color_by_altitude,
+                    projection=projection,
+                    fit_bounds=fit_bounds,
                 ),
                 use_container_width=True,
             )
-        with col_side:
+            st.caption(
+                "Drag to rotate the globe; scroll (or use the mode bar) to "
+                "zoom. Hover a point for identifier, timestamp, UTC time and "
+                "exact lat/lon/alt."
+            )
+        with col_map:
             st.plotly_chart(
-                make_time_scatter(
-                    globe_df, identifiers, "lat_deg", time_col, "Latitude vs time",
+                make_flat_map_figure(
+                    globe_df, identifiers, time_col,
+                    "Top-down trajectory map (equirectangular)",
+                    color_by_altitude=color_by_altitude,
+                    fit_bounds=fit_bounds,
                 ),
                 use_container_width=True,
             )
-        col_c, col_d = st.columns(2)
-        with col_c:
-            st.plotly_chart(
-                make_time_scatter(
-                    globe_df, identifiers, "lon_deg", time_col, "Longitude vs time",
-                ),
-                use_container_width=True,
-            )
-        with col_d:
-            st.plotly_chart(
-                make_time_scatter(
-                    globe_df, identifiers, "alt_m", time_col, "Altitude vs time",
-                ),
-                use_container_width=True,
+            st.caption(
+                "Classic top-down view of the same trajectories — line "
+                "segments connect samples in timestamp order per identifier."
             )
     else:
         # ---- 2x2 plot grid: 3D + N–U + N–E + E–U --------------------------
