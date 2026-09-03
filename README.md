@@ -87,6 +87,46 @@ Note: Streamlit cannot use matplotlib hover annotations, so the plotly charts
 provide equivalent native hover tooltips instead — hovering a point shows the
 identifier, the exact timestamp, and the exact N/U/E values.
 
+### LLH (LLA) coordinate mode
+
+The sidebar's **Coordinate mode** selector switches the viewer between the
+existing `NUE` behaviour and `LLH` (latitude / longitude / altitude).
+Identifier columns, the timestamp column, and the `[t1, t2]` range slider work
+identically in both modes.
+
+Two LLH input layouts are supported (picked with a sidebar radio, auto-detected
+from column names):
+
+- **3-col** — `Latitude`, `Longitude` (decimal degrees), `Altitude` (m).
+  Auto-detected defaults: names containing `latitude`/`lat`,
+  `longitude`/`lon`/`lng`, `altitude`/`alt`.
+- **7-col (DMS)** — `LatDeg`, `LatMin` (1/60 deg), `LatSec` (1/60 min) and the
+  `Lon*` equivalents, plus `Altitude` (m). Auto-detected defaults: names
+  containing `lat_deg`/`latd`, `lat_min`/`latm`, `lat_sec`/`lats` (and the
+  `lon*` analogues). Conversion:
+  `deg = D + M/60 + S·seconds_scale/3600` for both lat and lon.
+
+Every consumed column has a sidebar picker; selected columns are validated as
+numeric (non-numeric cells are coerced to NaN and counted in a sidebar
+warning).
+
+**Seconds scale** — a sidebar selectbox (`1` default, or `0.01`) multiplies
+`LatSec`/`LonSec` *before* conversion, for data where the seconds component is
+pre-multiplied by 100. It applies only in the 7-col layout and is disabled
+(greyed out) in 3-col mode.
+
+**LLH visualization** — the primary view is an interactive **globe**
+(`px.scatter_geo`, orthographic projection, countries/coastlines/land shown)
+with altitude as the marker colour scale. Because cross plots are meaningless
+on a globe, the 2x2 grid is replaced by lat-vs-time, lon-vs-time, and
+alt-vs-time scatters. Hover everywhere keeps the identifier, the timestamp,
+its UTC date-time, and the exact converted lat/lon/alt.
+
+The bundled `examples/sample_data.csv` carries extra LLH columns (3-col
+`Latitude`/`Longitude`/`Altitude_m` and 7-col `LatDeg…LonSec`) around Seoul
+(37.5N, 127.0E) — the demo works in LLH mode without uploading anything;
+existing N/U/E columns are unchanged.
+
 ## License
 
 MIT — see `LICENSE`.

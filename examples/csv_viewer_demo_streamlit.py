@@ -33,6 +33,13 @@ import streamlit as st
 
 from data_viz_kit.csv_viewer import load_csv  # noqa: F401  (reuse-style reference)
 
+from llh_utils import (
+    build_llh,
+    detect_llh_layout,
+    make_globe_figure,
+    make_time_scatter,
+)
+
 SAMPLE_CSV: Path = Path(__file__).resolve().parent / "sample_data.csv"
 
 
@@ -129,6 +136,95 @@ def main() -> None:
         st.stop()
     columns = list(df.columns)
 
+    # ---- coordinate mode ----------------------------------------------------
+    coord_mode = st.sidebar.selectbox("Coordinate mode", ["NUE", "LLH"], index=0)
+
+    llh_layout: str | None = None
+    seconds_scale = 1.0
+    llh_cols: dict[str, str] = {}
+    if coord_mode == "LLH":
+        detected_layout, defaults = detect_llh_layout(columns)
+        layout_options = ["3-col (lat/lon/alt decimal deg)", "7-col (DMS: deg/min/sec)"]
+        layout_choice = st.sidebar.radio(
+            "LLH input layout", layout_options,
+            index=layout_options.index(
+                "7-col (DMS: deg/min/sec)"
+                if detected_layout == "7col"
+                else "3-col (lat/lon/alt decimal deg)"
+            ),
+        )
+        llh_layout = "7col" if layout_choice.startswith("7-col") else "3col"
+        st.sidebar.caption(
+            f"Auto-detected layout: **{detected_layout}** — showing which layout is in use."
+        )
+        lat_or_none = defaults.get("lat") or defaults.get("lat_d")
+        lon_or_none = defaults.get("lon") or defaults.get("lon_d")
+        alt_or_none = defaults.get("alt")
+        if llh_layout == "3col":
+            if len(remaining_llh := [c for c in columns]) < 3:
+                st.warning("Need at least three LLH columns.")
+                st.stop()
+            llh_cols = {
+                "lat": st.sidebar.selectbox(
+                    "Latitude column (decimal deg)",
+                    columns,
+                    index=columns.index(lat_or_none) if lat_or_none else 0,
+                ),
+                "lon": st.sidebar.selectbox(
+                    "Longitude column (decimal deg)",
+                    columns,
+                    index=columns.index(lon_or_none) if lon_or_none else 0,
+                ),
+                "alt": st.sidebar.selectbox(
+                    "Altitude column (m)",
+                    columns,
+                    index=columns.index(alt_or_none) if alt_or_none else 0,
+                ),
+            }
+            seconds_scale = 1.0
+            st.sidebar.selectbox(
+                "seconds scale (7-col only)", [1, 0.01], index=0,
+                disabled=True,
+                help="Applies only in the 7-col (DMS) layout.",
+            )
+        else:
+            def _pick(label: str, field: str) -> str:
+                d = defaults.get(field)
+                return st.sidebar.selectbox(
+                    label, columns, index=columns.index(d) if d else 0,
+                )
+
+            llh_cols = {
+                "lat_d": _pick("LatDeg column", "lat_d"),
+                "lat_m": _pick("LatMin column (1/60 deg)", "lat_m"),
+                "lat_s": _pick("LatSec column (1/60 min)", "lat_s"),
+                "lon_d": _pick("LonDeg column", "lon_d"),
+                "lon_m": _pick("LonMin column (1/60 deg)", "lon_m"),
+                "lon_s": _pick("LonSec column (1/60 min)", "lon_s"),
+                "alt": _pick("Altitude column (m)", "alt"),
+            }
+            seconds_scale = float(
+                st.sidebar.selectbox(
+                    "seconds scale", [1, 0.01], index=0,
+                    help="Multiplies LatSec/LonSec before conversion — "
+                         "use 0.01 when seconds are pre-multiplied by 100.",
+                )
+            )
+        # ---- numeric validation ---------------------------------------------
+        consumed = list(llh_cols.values())
+        bad_counts: dict[str, int] = {}
+        for c in consumed:
+            coerced = cast(pd.Series, pd.to_numeric(df[c], errors="coerce"))
+            bad_counts[c] = int((coerced.isna() & df[c].notna()).sum())
+        total_bad = sum(bad_counts.values())
+        if total_bad:
+            st.sidebar.warning(
+                "Non-numeric values coerced to NaN: "
+                + ", ".join(f"{c}: {n}" for c, n in bad_counts.items() if n)
+            )
+        else:
+            st.sidebar.success("All selected LLH columns are numeric.")
+
     # ---- column configuration (mirrors csv_viewer_demo.py CLI args) -------
     default_time = "Timestamp" if "Timestamp" in columns else columns[0]
     time_col = st.sidebar.selectbox(
@@ -195,6 +291,12 @@ def main() -> None:
     # ---- filter ------------------------------------------------------------
     filtered = filter_time_window(df, time_col, t1, t2)
     filtered = filtered[filtered["_identifier"].isin(selected_ids)]
+    if coord_mode == "LLH" and llh_layout is not None:
+        filtered, non_numeric = build_llh(filtered, llh_layout, llh_cols, seconds_scale)
+        st.caption(
+            f"LLH mode: layout **{llh_layout}**, seconds scale **{seconds_scale}**"
+            + (f", {non_numeric} non-numeric coordinate cells coerced to NaN" if non_numeric else "")
+        )
     st.subheader(
         f"{len(filtered)} / {len(df)} rows in "
         f"[{min(t1, t2):.1f}, {max(t1, t2):.1f}] — {len(selected_ids)}/{len(identifiers)} identifiers"
@@ -202,6 +304,41 @@ def main() -> None:
 
     if filtered.empty:
         st.warning("No rows match the selected time window and identifiers.")
+    elif coord_mode == "LLH":
+        # ---- globe + time-series parity grid --------------------------------
+        globe_df = filtered.dropna(subset=["lat_deg", "lon_deg"])
+        col_globe, col_side = st.columns(2)
+        with col_globe:
+            st.plotly_chart(
+                make_globe_figure(
+                    globe_df, identifiers, time_col,
+                    "LLH globe (orthographic) — colour = altitude",
+                    color_by_altitude=True,
+                ),
+                use_container_width=True,
+            )
+        with col_side:
+            st.plotly_chart(
+                make_time_scatter(
+                    globe_df, identifiers, "lat_deg", time_col, "Latitude vs time",
+                ),
+                use_container_width=True,
+            )
+        col_c, col_d = st.columns(2)
+        with col_c:
+            st.plotly_chart(
+                make_time_scatter(
+                    globe_df, identifiers, "lon_deg", time_col, "Longitude vs time",
+                ),
+                use_container_width=True,
+            )
+        with col_d:
+            st.plotly_chart(
+                make_time_scatter(
+                    globe_df, identifiers, "alt_m", time_col, "Altitude vs time",
+                ),
+                use_container_width=True,
+            )
     else:
         # ---- 2x2 plot grid: 3D + N–U + N–E + E–U --------------------------
         col_a, col_b = st.columns(2)
