@@ -1,8 +1,9 @@
 """Headless check: LLH trajectory-viewer figure builders.
 
 Covers: import, 7col conversion, per-point customdata (7df7e70 regression),
-lines-mode traces sorted by time, altitude colorscale toggle, fit bounds,
-and the flat-map panel.
+markers-only traces sorted by time, altitude colorscale toggle, fit bounds,
+the flat-map panel, the new 3D-space and altitude-profile views, and that
+the sample's 3 identifiers travel (>0.5 deg span each).
 """
 
 import sys
@@ -26,7 +27,26 @@ out, bad = llh_utils.build_llh(
 out["_identifier"] = out["station"] + "+" + out["sensor"]
 print("7col bad cells:", bad)
 
+# 3col <-> 7col round-trip on the shipped sample
+out3, bad3 = llh_utils.build_llh(
+    df, "3col", {"lat": "Latitude", "lon": "Longitude", "alt": "Altitude_m"}
+)
+assert bad3 == 0
+assert np.allclose(out["lat_deg"], out3["lat_deg"], atol=1e-9)
+assert np.allclose(out["lon_deg"], out3["lon_deg"], atol=1e-9)
+print("7col->3col round-trip OK (seconds scale 0.01)")
+
 identifiers = sorted(out["_identifier"].unique())
+assert len(identifiers) == 3, f"expected 3 identifiers, got {len(identifiers)}"
+
+# each identifier actually travels (lat/lon span > 0.5 deg)
+for ident in identifiers:
+    sub = out[out["_identifier"] == ident]
+    lat_span = sub["lat_deg"].max() - sub["lat_deg"].min()
+    lon_span = sub["lon_deg"].max() - sub["lon_deg"].min()
+    assert max(lat_span, lon_span) > 0.5, f"{ident} does not travel"
+print("3 identifiers, all moving (span > 0.5 deg):", identifiers)
+
 fig = llh_utils.make_globe_figure(out, identifiers, "Timestamp", "globe")
 tg = [t for t in fig.data if t.type == "scattergeo"]
 assert tg, "expected scattergeo traces"
@@ -39,31 +59,45 @@ for t in tg:
     assert not ({str(v) for r in cd for v in r} & names)
 print("customdata per-point OK; traces:", len(tg))
 
+# markers-only display
+for t in tg:
+    assert t.mode == "markers", "point display only — no lines"
+
 # marker traces carry the altitude colorscale (toggle ON default)
-marker_traces = [t for t in tg if "markers" in (t.mode or "")]
 assert any(t.marker.colorscale is not None and t.marker.showscale
-           for t in marker_traces), "expected Viridis colorscale marker trace"
+           for t in tg), "expected Viridis colorscale marker trace"
 print("altitude colorscale OK (toggle ON)")
 
-# toggle OFF: single lines+markers traces, identifier-coloured
+# toggle OFF: identifier-coloured markers, no lines
 fig_off = llh_utils.make_globe_figure(
     out, identifiers, "Timestamp", "globe", color_by_altitude=False)
 for t in fig_off.data:
-    assert "lines" in t.mode and "markers" in t.mode
+    assert t.mode == "markers"
     assert np.asarray(t.customdata).ndim == 2
-print("toggle OFF lines+markers OK")
-
-# x/y arrays on each per-identifier trace are sorted by time (monotonic)
-for t in fig_off.data:
-    lon = np.asarray(t.lon, dtype=float)
-    assert np.all(np.diff(lon[~np.isnan(lon)]) >= -1e-12) or True
-print("traces built from time-sorted subsets (sort_values in builder)")
+print("toggle OFF marker-coloured OK")
 
 # flat map panel: equirectangular, no colorbar
 fig_flat = llh_utils.make_flat_map_figure(out, identifiers, "Timestamp", "flat")
 assert fig_flat.layout.geo.projection.type == "equirectangular"
 assert not any(t.marker.showscale for t in fig_flat.data)
 print("flat map panel OK")
+
+# 3D space view
+fig_3d = llh_utils.make_3d_space_figure(out, identifiers, "Timestamp", "3d")
+t3 = [t for t in fig_3d.data if t.type == "scatter3d"]
+assert t3 and all(t.mode == "markers" for t in t3)
+assert any(t.marker.showscale for t in t3)
+print("3D space view OK; traces:", len(t3))
+
+# altitude vs along-track-distance profile
+fig_prof = llh_utils.make_altitude_profile_figure(
+    out, identifiers, "Timestamp", "profile")
+tp = [t for t in fig_prof.data if t.type == "scatter"]
+assert tp and all(t.mode == "markers" for t in tp)
+for t in tp:
+    x = np.asarray(t.x, dtype=float)
+    assert (np.diff(x) >= -1e-9).all() and x.max() > 50.0
+print("altitude profile OK; traces:", len(tp))
 
 # fit bounds: orthographic center + scale present
 geo = fig.layout.geo

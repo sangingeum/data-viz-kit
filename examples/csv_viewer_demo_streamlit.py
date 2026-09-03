@@ -36,6 +36,8 @@ from data_viz_kit.csv_viewer import load_csv  # noqa: F401  (reuse-style referen
 from llh_utils import (
     build_llh,
     detect_llh_layout,
+    make_3d_space_figure,
+    make_altitude_profile_figure,
     make_flat_map_figure,
     make_globe_figure,
 )
@@ -310,9 +312,9 @@ def main() -> None:
         # ---- LLH trajectory-viewer sidebar options --------------------------
         color_by_altitude = st.sidebar.toggle(
             "Color markers by altitude", value=True,
-            help="Marker colour scales with altitude (Viridis colorbar); "
-                 "trajectory lines stay identifier-coloured. When off, "
-                 "everything is identifier-coloured.",
+            help="Marker colour scales with altitude (Viridis colorbar, "
+                 "shared across identifiers). When off, markers are "
+                 "identifier-coloured.",
         )
         projection = st.sidebar.selectbox(
             "Globe projection", PROJECTIONS, index=0,
@@ -322,13 +324,16 @@ def main() -> None:
             help="Zoom the map to the filtered data's lat/lon bounding box "
                  "instead of showing the whole Earth.",
         )
-        # ---- globe (left) + flat top-down map (right) ------------------------
         globe_df = filtered.dropna(subset=["lat_deg", "lon_deg"])
-        col_globe, col_map = st.columns(2)
-        with col_globe:
+        ids = sorted(globe_df["_identifier"].unique())
+        # ---- tabs: globe / flat map / 3D space / altitude profile -----------
+        tab_globe, tab_map, tab_3d, tab_prof = st.tabs(
+            ["Globe", "Flat map", "3D space", "Altitude profile"]
+        )
+        with tab_globe:
             st.plotly_chart(
                 make_globe_figure(
-                    globe_df, identifiers, time_col,
+                    globe_df, ids, time_col,
                     f"Trajectory globe ({projection})",
                     color_by_altitude=color_by_altitude,
                     projection=projection,
@@ -339,12 +344,12 @@ def main() -> None:
             st.caption(
                 "Drag to rotate the globe; scroll (or use the mode bar) to "
                 "zoom. Hover a point for identifier, timestamp, UTC time and "
-                "exact lat/lon/alt."
+                "exact lat/lon/alt. Markers only — no connecting lines."
             )
-        with col_map:
+        with tab_map:
             st.plotly_chart(
                 make_flat_map_figure(
-                    globe_df, identifiers, time_col,
+                    globe_df, ids, time_col,
                     "Top-down trajectory map (equirectangular)",
                     color_by_altitude=color_by_altitude,
                     fit_bounds=fit_bounds,
@@ -352,8 +357,34 @@ def main() -> None:
                 use_container_width=True,
             )
             st.caption(
-                "Classic top-down view of the same trajectories — line "
-                "segments connect samples in timestamp order per identifier."
+                "Classic top-down view of the same trajectories — pure "
+                "point display, coloured by altitude or identifier."
+            )
+        with tab_3d:
+            st.plotly_chart(
+                make_3d_space_figure(
+                    globe_df, ids, time_col,
+                    "3D space view (lat/lon/alt)",
+                    color_by_altitude=color_by_altitude,
+                ),
+                use_container_width=True,
+            )
+            st.caption(
+                "True 3-D scatter: x = lon, y = lat, z = alt_m. Drag to "
+                "rotate and inspect the vertical structure in space."
+            )
+        with tab_prof:
+            st.plotly_chart(
+                make_altitude_profile_figure(
+                    globe_df, ids, time_col,
+                    "Altitude vs along-track distance",
+                ),
+                use_container_width=True,
+            )
+            st.caption(
+                "Vertical flight profile: altitude (m) against cumulative "
+                "great-circle distance along each track (km) — climb, "
+                "cruise, and descent per aircraft. x is distance, not time."
             )
     else:
         # ---- 2x2 plot grid: 3D + N–U + N–E + E–U --------------------------

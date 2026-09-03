@@ -13,10 +13,13 @@ EXAMPLES_DIR = Path(__file__).resolve().parent.parent / "examples"
 sys.path.insert(0, str(EXAMPLES_DIR))
 
 from llh_utils import (  # noqa: E402
+    along_track_distance_km,
     build_llh,
     coerce_numeric,
     detect_llh_layout,
     dms_to_decimal_degrees,
+    make_3d_space_figure,
+    make_altitude_profile_figure,
     make_flat_map_figure,
     make_globe_figure,
     make_trajectory_figure,
@@ -173,12 +176,24 @@ def test_build_llh_3col_counts_non_numeric() -> None:
 # ---- sample generators -----------------------------------------------------
 
 
-def test_sample_llh_3col() -> None:
+def test_sample_llh_3col_flight_paths() -> None:
+    """Three aircraft on realistic trajectories that actually travel."""
     df = sample_llh_3col()
     assert {"station", "sensor", "Timestamp", "N", "U", "E",
             "Latitude", "Longitude", "Altitude_m"}.issubset(df.columns)
-    assert df["Latitude"].between(37.0, 38.0).all()
-    assert df["Longitude"].between(126.5, 127.5).all()
+    ids = sorted((df["station"] + "+" + df["sensor"]).unique())
+    assert len(ids) == 3
+    for ident in ids:
+        station, sensor = ident.split("+")
+        sub = df[(df["station"] == station) & (df["sensor"] == sensor)]
+        assert 200 <= len(sub) <= 400, f"{ident}: {len(sub)} points"
+        lat_span = sub["Latitude"].max() - sub["Latitude"].min()
+        lon_span = sub["Longitude"].max() - sub["Longitude"].min()
+        assert max(lat_span, lon_span) > 0.5, f"{ident} must travel"
+        assert sub["Altitude_m"].max() > 8000.0, f"{ident} must reach cruise"
+        ts = np.sort(sub["Timestamp"].to_numpy())
+        assert ts[-1] - ts[0] <= 3600.0 + 30.0  # ~one hour of flight
+        assert (sub["Altitude_m"] > 0).all()
 
 
 def test_sample_llh_7col_roundtrip() -> None:
@@ -198,8 +213,7 @@ def test_sample_csv_has_llh_columns() -> None:
               "Latitude", "Longitude", "Altitude_m",
               "LatDeg", "LatMin", "LatSec", "LonDeg", "LonMin", "LonSec"):
         assert c in csv.columns, f"missing column {c}"
-    assert len(csv) == 900
-
+    assert 850 <= len(csv) <= 950
 
 # ---- figure builders (headless) -------------------------------------------
 
@@ -235,15 +249,15 @@ def test_globe_figure_scattergeo_customdata_is_per_point() -> None:
         assert not (flat & names), "column names leaked into customdata"
 
 
-def test_trajectory_traces_are_lines_sorted_by_time() -> None:
-    """Every identifier draws a lines+markers path ordered by timestamp."""
+def test_trajectory_traces_are_markers_only_sorted_by_time() -> None:
+    """Every identifier draws a markers-only path, points sorted by timestamp."""
     df = _figure_df().sort_values("Timestamp", ascending=False)  # shuffled input
     fig = make_globe_figure(df, sorted(df["_identifier"].unique()), "Timestamp",
                             "globe", color_by_altitude=False)
     traces = [t for t in fig.data if t.type == "scattergeo"]
     assert traces
     for trace in traces:
-        assert "lines" in trace.mode, "trajectory needs line segments"
+        assert trace.mode == "markers", "point display only — no lines"
         ts = pd.to_datetime(np.asarray(trace.customdata)[:, 3], unit="s")
         assert (np.diff(ts.astype(np.int64)) >= np.timedelta64(0, "s")).all(), (
             "trace points must be monotonic non-decreasing in time"
@@ -256,21 +270,20 @@ def test_trajectory_color_by_altitude_toggle() -> None:
     ids = sorted(df["_identifier"].unique())
     fig_on = make_globe_figure(df, ids, "Timestamp", "globe",
                                color_by_altitude=True)
-    marker_traces = [t for t in fig_on.data if t.mode == "markers"]
-    assert marker_traces, "altitude mode adds a marker-only trace per identifier"
-    assert any(
-        t.marker.showscale and t.marker.colorscale is not None
-        for t in marker_traces
-    ), "expected a colorscale + colorbar on altitude-coloured markers"
-    line_traces = [t for t in fig_on.data if "lines" in (t.mode or "")]
-    assert line_traces, "line segments always present (in line traces)"
-    for t in line_traces:
-        assert t.mode == "lines"  # lines live in identifier-coloured traces
+    traces = [t for t in fig_on.data if t.type == "scattergeo"]
+    assert traces
+    for t in traces:
+        assert t.mode == "markers"
+        assert t.marker.showscale and t.marker.colorscale is not None, (
+            "expected colorscale + colorbar on altitude-coloured markers"
+        )
+        assert t.marker.cmin == pytest.approx(df["alt_m"].min())
+        assert t.marker.cmax == pytest.approx(df["alt_m"].max())
 
     fig_off = make_globe_figure(df, ids, "Timestamp", "globe",
                                 color_by_altitude=False)
     for t in fig_off.data:
-        assert t.mode == "lines+markers"
+        assert t.mode == "markers"
         assert not t.marker.showscale
 
 
@@ -285,8 +298,8 @@ def test_trajectory_hover_template() -> None:
         assert "_identifier" not in t  # template references indices, not names
         assert "UTC = %{customdata[4]}" in t
         assert "alt_m = %{customdata[2]}" in t
-    line_traces = [t for t in fig.data if t.mode == "lines"]
-    assert all(t.hoverinfo == "skip" for t in line_traces)
+    line_traces = [t for t in fig.data if t.hoverinfo == "skip"]
+    assert not line_traces, "no hover-suppressed traces (markers-only now)"
 
 
 def test_trajectory_fit_bounds_zooms_to_data() -> None:
@@ -314,7 +327,65 @@ def test_flat_map_figure_is_equirectangular_no_colorbar() -> None:
                                "Timestamp", "flat")
     assert fig.layout.geo.projection.type == "equirectangular"
     assert not any(t.marker.showscale for t in fig.data)
-    assert any("lines" in t.mode for t in fig.data)
+    assert all(t.mode == "markers" for t in fig.data)
+
+
+# ---- new trajectory views ---------------------------------------------------
+
+
+def test_3d_space_figure_markers_only_customdata() -> None:
+    df = _figure_df()
+    ids = sorted(df["_identifier"].unique())
+    fig = make_3d_space_figure(df, ids, "Timestamp", "3d")
+    assert fig.data and all(t.type == "scatter3d" for t in fig.data)
+    for t in fig.data:
+        assert t.mode == "markers"
+        cd = np.asarray(t.customdata)
+        assert cd.ndim == 2 and cd.shape[0] == len(t.x)
+        # z is altitude, matching actual points
+        assert np.allclose(np.asarray(t.z, dtype=float),
+                           cd[:, 2].astype(float))
+    assert any(t.marker.showscale for t in fig.data)
+    fig_off = make_3d_space_figure(df, ids, "Timestamp", "3d",
+                                   color_by_altitude=False)
+    assert all(not t.marker.showscale for t in fig_off.data)
+    assert any(t.hovertemplate for t in fig.data)
+
+
+def test_along_track_distance_is_cumulative_monotonic() -> None:
+    df = _figure_df()
+    dist = along_track_distance_km(df, "Timestamp")
+    assert len(dist) == len(df)
+    for ident in sorted(df["_identifier"].unique()):
+        sub = df[df["_identifier"] == ident]
+        d = dist.loc[sub.index].sort_index()
+        assert d.iloc[0] == pytest.approx(0.0)
+        assert (np.diff(d.to_numpy()) >= -1e-9).all()
+    # full-sample trajectories must travel real distances
+    full = sample_llh_3col()
+    out, _ = build_llh(
+        full, "3col",
+        {"lat": "Latitude", "lon": "Longitude", "alt": "Altitude_m"},
+    )
+    out["_identifier"] = out["station"] + "+" + out["sensor"]
+    full_dist = along_track_distance_km(out, "Timestamp")
+    max_per_id = full_dist.groupby(out["_identifier"]).max()
+    assert (max_per_id > 100.0).all()
+
+
+def test_altitude_profile_figure() -> None:
+    df = _figure_df()
+    fig = make_altitude_profile_figure(
+        df, sorted(df["_identifier"].unique()), "Timestamp", "prof"
+    )
+    assert fig.data and all(t.type == "scatter" for t in fig.data)
+    for t in fig.data:
+        assert t.mode == "markers"  # no lines
+        x = np.asarray(t.x, dtype=float)
+        y = np.asarray(t.y, dtype=float)
+        assert (np.diff(x) >= -1e-9).all()  # cumulative distance
+        assert y.min() > 0.0
+        assert t.hovertemplate and "along_track_km" in t.hovertemplate
 
 
 def test_globe_figure_layout_and_hover() -> None:
