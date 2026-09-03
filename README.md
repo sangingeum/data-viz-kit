@@ -116,21 +116,23 @@ pre-multiplied by 100. It applies only in the 7-col layout and is disabled
 (greyed out) in 3-col mode.
 
 **LLH visualization — trajectory viewer** — the primary view is an aircraft
-**trajectory viewer** built around two panels:
+**trajectory viewer** laid out as two compact rows of side-by-side panels
+followed by the filtered data table:
 
-- **Trajectory globe** (left, `px.scatter_geo`-style `lines+markers`
-  scattergeo): one trace per identifier, with line segments connecting points
-  in **timestamp order** so each identifier draws its flight path. Countries,
-  coastlines, and land are shown; a caption reminds you that you can drag to
-  rotate and scroll/mode-bar to zoom.
-- **Top-down trajectory map** (right, equirectangular projection): the classic
-  flat lat-vs-lon view of the same trajectories, same styling.
+- **Row 1 — Trajectory globe** (left, orthographic by default) next to the
+  **Top-down trajectory map** (right, equirectangular projection). One
+  markers-only trace per identifier; countries, coastlines, and land are
+  shown; captions explain rotation/zoom and hovering.
+- **Row 2 — 3D space view** (left, `go.Scatter3d`: x = lon, y = lat,
+  z = alt_m) next to the **Altitude profile** (right, altitude against
+  cumulative along-track distance in km).
+
+Every view colours markers by **identifier only** — one shared identifier →
+colour mapping (Plotly qualitative palette) is computed once and passed to
+all four figures, so each aircraft keeps the same colour everywhere.
 
 Readability options in the sidebar:
 
-- **Color markers by altitude** (default ON) — markers are coloured by
-  altitude with a Viridis colorbar while the trajectory lines stay
-  identifier-coloured; OFF colours everything per identifier.
 - **Globe projection** — orthographic (default), equirectangular, or natural
   earth.
 - **Fit bounds to trajectories** (default ON) — sets the geo center plus
@@ -144,7 +146,11 @@ the exact converted lat/lon/alt (per-point customdata).
 The bundled `examples/sample_data.csv` carries extra LLH columns (3-col
 `Latitude`/`Longitude`/`Altitude_m` and 7-col `LatDeg…LonSec`) around Seoul
 (37.5N, 127.0E) — the demo works in LLH mode without uploading anything;
-existing N/U/E columns are unchanged.
+existing N/U/E columns are unchanged. The sample trajectories are **smooth**:
+per-flight lateral curve offsets, GPS-level (~1 m) position noise, a smooth
+climb/cruise/descent altitude envelope (~5 m noise, no >100 m jumps), and a
+consistent ~1.75 km median point spacing for all three aircraft
+(regenerate with `scripts/regenerate_sample.py`).
 
 ## License
 

@@ -15,7 +15,7 @@ Conversions
 from __future__ import annotations
 
 from pathlib import Path
-from typing import cast
+from typing import Sequence, cast
 
 import numpy as np
 import pandas as pd
@@ -169,6 +169,17 @@ def _utc_time_series(df: pd.DataFrame, time_col: str) -> pd.Series:
 _TRAJECTORY_CUSTOM_COLS = ["lat_deg", "lon_deg", "alt_m"]
 
 
+def build_identifier_color_map(identifiers: Sequence[str]) -> dict[str, str]:
+    """Deterministic identifier -> colour mapping from the Plotly qualitative palette.
+
+    Computed once and passed to every figure builder so each identifier has
+    the SAME colour in the globe, flat map, 3D space, and altitude profile
+    views.  Sorted input guarantees stability regardless of caller order.
+    """
+    palette = px.colors.qualitative.Plotly
+    return {ident: palette[i % len(palette)] for i, ident in enumerate(sorted(identifiers))}
+
+
 def _trajectory_hover_template(time_col: str, custom_cols: list[str]) -> str:
     """Hover template showing identifier, timestamp, UTC time, exact lat/lon/alt."""
     idx = {c: i for i, c in enumerate(custom_cols)}
@@ -227,56 +238,41 @@ def make_trajectory_figure(
     identifiers: list[str],
     time_col: str,
     title: str,
-    color_by_altitude: bool = True,
+    color_map: dict[str, str] | None = None,
     projection: str = "orthographic",
     fit_bounds: bool = True,
-    show_colorbar: bool = True,
 ):
     """Trajectory viewer figure: one markers-only scattergeo per identifier.
 
     Pure point display — no connecting lines.  Points are **sorted by
     timestamp** per identifier (matters for hover/tabular consistency).
-    When *color_by_altitude* is on, markers are coloured by ``alt_m``
-    (Viridis, shared cmin/cmax across identifiers + colorbar); when off,
-    markers take their identifier's palette colour.
+    Markers take their identifier's palette colour from *color_map*
+    (shared across all four views so each identifier keeps one colour).
 
     Hover shows identifier, timestamp, UTC time, and exact lat/lon/alt via
     **per-point** customdata columns — never a list of names (7df7e70 bug).
 
-    With ``projection="equirectangular"`` and ``show_colorbar=False`` this
-    doubles as the flat top-down map panel.
+    With ``projection="equirectangular"`` this doubles as the flat top-down
+    map panel.
     """
     df = df.copy()
     df["_utc_time"] = _utc_time_series(df, time_col)
     custom_cols = _TRAJECTORY_CUSTOM_COLS + [time_col, "_utc_time", "_identifier"]
     hover = _trajectory_hover_template(time_col, custom_cols)
     fig = go.Figure()
-    palette = px.colors.qualitative.Plotly
-    alt_min = float(df["alt_m"].min()) if not df.empty else 0.0
-    alt_max = float(df["alt_m"].max()) if not df.empty else 1.0
-    if alt_max <= alt_min:
-        alt_max = alt_min + 1.0
+    if color_map is None:
+        color_map = build_identifier_color_map(identifiers)
 
-    for k, ident in enumerate(sorted(identifiers)):
+    for ident in sorted(identifiers):
         sub = df[df["_identifier"] == ident].copy()
         sub = sub.dropna(subset=["lat_deg", "lon_deg"])
         if sub.empty:
             continue
         sub = sub.sort_values(time_col, kind="stable")
-        color = palette[k % len(palette)]
         cd = sub[custom_cols].to_numpy()
-        marker: dict[str, object] = dict(size=4, opacity=0.9)
-        if color_by_altitude:
-            marker["color"] = sub["alt_m"]
-            marker["colorscale"] = "Viridis"
-            marker["cmin"] = alt_min
-            marker["cmax"] = alt_max
-            marker["showscale"] = bool(show_colorbar and k == 0)
-            marker["colorbar"] = (
-                dict(title="alt_m") if (show_colorbar and k == 0) else None
-            )
-        else:
-            marker["color"] = color
+        marker: dict[str, object] = dict(
+            size=4, opacity=0.9, color=color_map.get(ident, "#636efa")
+        )
         fig.add_trace(go.Scattergeo(
             lat=sub["lat_deg"], lon=sub["lon_deg"], mode="markers",
             name=ident, legendgroup=ident, showlegend=True,
@@ -298,14 +294,14 @@ def make_globe_figure(
     identifiers: list[str],
     time_col: str,
     title: str,
-    color_by_altitude: bool = True,
+    color_map: dict[str, str] | None = None,
     projection: str = "orthographic",
     fit_bounds: bool = True,
 ):
-    """Backwards-compatible alias for :func:`make_trajectory_figure` (globe panel)."""
+    """Globe panel (orthographic by default) — identifier-coloured markers."""
     return make_trajectory_figure(
         df, identifiers, time_col, title,
-        color_by_altitude=color_by_altitude,
+        color_map=color_map,
         projection=projection, fit_bounds=fit_bounds,
     )
 
@@ -315,15 +311,14 @@ def make_flat_map_figure(
     identifiers: list[str],
     time_col: str,
     title: str,
-    color_by_altitude: bool = True,
+    color_map: dict[str, str] | None = None,
     fit_bounds: bool = True,
 ):
     """Flat top-down trajectory map (equirectangular) — second panel."""
     return make_trajectory_figure(
         df, identifiers, time_col, title,
-        color_by_altitude=color_by_altitude,
+        color_map=color_map,
         projection="equirectangular", fit_bounds=fit_bounds,
-        show_colorbar=False,
     )
 
 
@@ -332,42 +327,32 @@ def make_3d_space_figure(
     identifiers: list[str],
     time_col: str,
     title: str,
-    color_by_altitude: bool = True,
+    color_map: dict[str, str] | None = None,
 ):
     """True 3-D lat/lon/alt view (``go.Scatter3d``, markers only).
 
     Shows the vertical structure of the trajectories in space: x = lon,
-    y = lat, z = alt_m.  Colouring follows the same toggle as the maps:
-    altitude colour-scale (shared cmin/cmax + colorbar) or per-identifier
-    palette colour.  Full hover details on every point.
+    y = lat, z = alt_m.  Markers take their identifier's palette colour
+    from *color_map* (same mapping as the geo views).  Full hover details
+    on every point.
     """
     df = df.copy()
     df["_utc_time"] = _utc_time_series(df, time_col)
     custom_cols = _TRAJECTORY_CUSTOM_COLS + [time_col, "_utc_time", "_identifier"]
     hover = _trajectory_hover_template(time_col, custom_cols)
     fig = go.Figure()
-    palette = px.colors.qualitative.Plotly
-    alt_min = float(df["alt_m"].min()) if not df.empty else 0.0
-    alt_max = float(df["alt_m"].max()) if not df.empty else 1.0
-    if alt_max <= alt_min:
-        alt_max = alt_min + 1.0
-    for k, ident in enumerate(sorted(identifiers)):
+    if color_map is None:
+        color_map = build_identifier_color_map(identifiers)
+    for ident in sorted(identifiers):
         sub = df[df["_identifier"] == ident].copy()
         sub = sub.dropna(subset=["lat_deg", "lon_deg", "alt_m"])
         if sub.empty:
             continue
         sub = sub.sort_values(time_col, kind="stable")
         cd = sub[custom_cols].to_numpy()
-        marker: dict[str, object] = dict(size=3, opacity=0.85)
-        if color_by_altitude:
-            marker["color"] = sub["alt_m"]
-            marker["colorscale"] = "Viridis"
-            marker["cmin"] = alt_min
-            marker["cmax"] = alt_max
-            marker["showscale"] = bool(k == 0)
-            marker["colorbar"] = dict(title="alt_m") if k == 0 else None
-        else:
-            marker["color"] = palette[k % len(palette)]
+        marker: dict[str, object] = dict(
+            size=3, opacity=0.85, color=color_map.get(ident, "#636efa")
+        )
         fig.add_trace(go.Scatter3d(
             x=sub["lon_deg"], y=sub["lat_deg"], z=sub["alt_m"],
             mode="markers", name=ident, legendgroup=ident, showlegend=True,
@@ -427,12 +412,14 @@ def make_altitude_profile_figure(
     identifiers: list[str],
     time_col: str,
     title: str,
+    color_map: dict[str, str] | None = None,
 ):
     """Altitude vs along-track distance (km) — vertical flight profile.
 
     x is cumulative great-circle distance along each identifier's track
     (not time, sidestepping the owner's no-time-x-axis rule).  One
-    markers-only scatter per identifier; full hover details.
+    markers-only scatter per identifier, coloured by *color_map* (same
+    mapping as the other views); full hover details.
     """
     df = df.copy()
     df["_utc_time"] = _utc_time_series(df, time_col)
@@ -451,8 +438,9 @@ def make_altitude_profile_figure(
         f"UTC = %{{customdata[{idx['_utc_time']}]}}<extra></extra>"
     )
     fig = go.Figure()
-    palette = px.colors.qualitative.Plotly
-    for k, ident in enumerate(sorted(identifiers)):
+    if color_map is None:
+        color_map = build_identifier_color_map(identifiers)
+    for ident in sorted(identifiers):
         sub = df[df["_identifier"] == ident].copy()
         sub = sub.dropna(subset=["lat_deg", "lon_deg", "alt_m", "_along_km"])
         if sub.empty:
@@ -461,7 +449,8 @@ def make_altitude_profile_figure(
         fig.add_trace(go.Scatter(
             x=sub["_along_km"], y=sub["alt_m"], mode="markers",
             name=ident, legendgroup=ident, showlegend=True,
-            marker=dict(size=4, opacity=0.85, color=palette[k % len(palette)]),
+            marker=dict(size=4, opacity=0.85,
+                        color=color_map.get(ident, "#636efa")),
             customdata=sub[custom_cols].to_numpy(), hovertemplate=hover,
         ))
     fig.update_layout(
@@ -475,37 +464,41 @@ def make_altitude_profile_figure(
 
 
 #: flight legs: (callsign, aircraft id, start (lat, lon), waypoints, cruise alt m)
-#: Routes (realistic Korean city pairs):
-#:   KAL7701+HL8201: Incheon -> over Seoul -> Busan
+#: Routes (realistic Korean city pairs, direct great-circle + lateral curve):
+#:   KAL7701+HL8201: Incheon -> Busan
 #:   JJA102 +HL8052: Seoul -> Jeju
 #:   KAL9903+HL8275: Daegu -> Gwangju
 _FLIGHT_ROUTES: list[dict[str, object]] = [
     {
         "callsign": "KAL7701", "aircraft": "HL8201",
         "start": (37.46, 126.44),          # Incheon
-        "via": (37.52, 127.02),            # over Seoul (Gimpo)
         "end": (35.18, 128.99),            # Busan (Gimhae)
         "cruise": 10500.0,
     },
     {
         "callsign": "JJA102", "aircraft": "HL8052",
         "start": (37.52, 127.02),          # Seoul
-        "via": None,
         "end": (33.51, 126.53),            # Jeju
         "cruise": 9800.0,
     },
     {
         "callsign": "KAL9903", "aircraft": "HL8275",
         "start": (35.87, 128.60),          # Daegu
-        "via": None,
         "end": (35.17, 126.89),            # Gwangju
         "cruise": 9000.0,
     },
 ]
 
-#: sample epoch: 2025-07-01 00:00:00 UTC; one hour of flight
+#: sample epoch: 2025-07-01 00:00:00 UTC
 _SAMPLE_EPOCH = 1751328000.0
-_SAMPLE_DURATION_S = 3600.0
+#: nominal ground speed (km/s) used to derive each flight's duration (~720 km/h)
+_SAMPLE_SPEED_KM_S = 0.20
+#: target median point spacing (km) — consistent across all aircraft
+_SAMPLE_STEP_KM = 1.75
+#: GPS-level position noise (deg) ~ 1e-5 deg ≈ 1 m
+_SAMPLE_POS_NOISE_DEG = 1e-5
+#: altitude noise std (m) on the smooth envelope
+_SAMPLE_ALT_NOISE_M = 5.0
 
 
 def _slerp_interp(
@@ -537,50 +530,88 @@ def _slerp_interp(
     return lat, lon
 
 
+def _haversine_km_scalar(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance (km) between two lat/lon points."""
+    la1, lo1, la2, lo2 = map(np.radians, (lat1, lon1, lat2, lon2))
+    a = (
+        np.sin((la2 - la1) / 2.0) ** 2
+        + np.cos(la1) * np.cos(la2) * np.sin((lo2 - lo1) / 2.0) ** 2
+    )
+    return float(6371.0088 * 2.0 * np.arcsin(np.sqrt(np.clip(a, 0.0, 1.0))))
+
+
+def _route_length_km(route: dict[str, object]) -> float:
+    """Great-circle length (km) of a route (direct start -> end)."""
+    start, end = cast(
+        tuple[tuple[float, float], tuple[float, float]],
+        (route["start"], route["end"]),
+    )
+    return _haversine_km_scalar(*start, *end)
+
+
 def _altitude_profile(
-    frac: np.ndarray, cruise: float, rng: np.random.Generator
+    frac: np.ndarray, cruise: float, step_km: float, total_km: float
 ) -> np.ndarray:
-    """Climb/cruise/descent altitude profile with gentle cruise variation."""
-    alt = np.full_like(frac, cruise)
-    climb = frac < 0.15
-    descent = frac > 0.85
-    alt[climb] = 500.0 + (cruise - 500.0) * (frac[climb] / 0.15)
-    alt[descent] = cruise * (1.0 - (frac[descent] - 0.85) / 0.15) + 300.0
-    return alt + rng.normal(0.0, 12.0, size=frac.shape)
+    """Smooth climb/cruise/descent altitude envelope (no per-point noise).
+
+    Climb and descent are LINEAR ramps at a constant 45 m per km of track,
+    so the altitude change between consecutive points is a constant
+    ~45 * step_km metres (≈70 m at the 1.75 km spacing — under the 100 m
+    smoothness bound).  Cruise is capped at the altitude physically
+    reachable within climb + descent ramps of at most 45% of the route
+    each, so short routes top out lower instead of breaking the rate cap.
+    """
+    rate_m_per_km = 40.0
+    ramp_frac = 0.45  # climb and descent each use at most this share of track
+    reachable = 500.0 + rate_m_per_km * ramp_frac * total_km
+    effective = min(cruise, reachable)
+    alt = np.full_like(frac, effective, dtype=float)
+    climb = frac < ramp_frac
+    descent = frac > 1.0 - ramp_frac
+    alt[climb] = 500.0 + (effective - 500.0) * (frac[climb] / ramp_frac)
+    alt[descent] = 300.0 + (effective - 300.0) * (
+        1.0 - (frac[descent] - (1.0 - ramp_frac)) / ramp_frac
+    )
+    return alt
 
 
 def _flight_rows(
-    route: dict[str, object], n_points: int, rng: np.random.Generator
+    route: dict[str, object], rng: np.random.Generator
 ) -> pd.DataFrame:
-    """Build one aircraft's trajectory rows (lat/lon/alt + derived columns)."""
-    start, via, end, cruise = cast(
-        tuple[tuple[float, float], tuple[float, float] | None,
-              tuple[float, float], float],
-        (route["start"], route["via"], route["end"], route["cruise"]),
+    """Build one aircraft's trajectory rows (lat/lon/alt + derived columns).
+
+    Smoothness: the lateral curve offsets are drawn ONCE per flight
+    (deterministic per flight), per-point position noise is GPS-level
+    (~1e-5 deg ≈ 1 m), and the altitude envelope carries only small
+    (~5 m) noise — no >100 m jumps between consecutive points.  Point
+    count is derived from route length and ``_SAMPLE_STEP_KM`` so all
+    aircraft share the same median step (~1.75 km).
+    """
+    start, end, cruise = cast(
+        tuple[tuple[float, float], tuple[float, float], float],
+        (route["start"], route["end"], route["cruise"]),
     )
+    # consistent density: points from route length at _SAMPLE_STEP_KM spacing
+    total_km = _route_length_km(route)
+    n_points = max(int(round(total_km / _SAMPLE_STEP_KM)), 20)
+
     t0, t1 = start
-    if via is not None:
-        v0, v1 = via
-        e0, e1 = end
-        f1 = np.linspace(0.0, 1.0, n_points // 2 + 1)
-        f2 = np.linspace(0.0, 1.0, n_points - len(f1))
-        lat_a, lon_a = _slerp_interp(t0, t1, v0, v1, f1)
-        lat_b, lon_b = _slerp_interp(v0, v1, e0, e1, f2)
-        lat = np.concatenate([lat_a, lat_b[1:]])
-        lon = np.concatenate([lon_a, lon_b[1:]])
-        frac = np.linspace(0.0, 1.0, len(lat))
-    else:
-        e0, e1 = end
-        frac = np.linspace(0.0, 1.0, n_points)
-        lat, lon = _slerp_interp(t0, t1, e0, e1, frac)
-    # slight lateral curve so the track is not a perfect line
-    lat = lat + 0.03 * np.sin(np.pi * frac) * rng.normal(0.35, 0.1)
-    lon = lon + 0.03 * np.sin(np.pi * frac) * rng.normal(-0.5, 0.1)
-    alt = _altitude_profile(frac, cruise, rng)
-    ts = _SAMPLE_EPOCH + frac * _SAMPLE_DURATION_S + rng.normal(
-        0.0, 1.0, size=frac.shape
+    e0, e1 = end
+    frac = np.linspace(0.0, 1.0, n_points)
+    lat, lon = _slerp_interp(t0, t1, e0, e1, frac)
+    # slight lateral curve so the track is not a perfect line — drawn ONCE
+    # per flight (deterministic per flight, not per point)
+    lat = lat + 0.03 * np.sin(np.pi * frac) * float(rng.normal(0.35, 0.1))
+    lon = lon + 0.03 * np.sin(np.pi * frac) * float(rng.normal(-0.5, 0.1))
+    # GPS-level per-point position noise (~1e-5 deg ≈ 1 m)
+    lat = lat + rng.normal(0.0, _SAMPLE_POS_NOISE_DEG, size=frac.shape)
+    lon = lon + rng.normal(0.0, _SAMPLE_POS_NOISE_DEG, size=frac.shape)
+    # smooth climb/cruise/descent envelope + small (~5 m) altitude noise
+    alt = _altitude_profile(frac, cruise, _SAMPLE_STEP_KM, total_km) + rng.normal(
+        0.0, _SAMPLE_ALT_NOISE_M, size=frac.shape
     )
-    ts = np.sort(ts)
+    duration_s = total_km / _SAMPLE_SPEED_KM_S
+    ts = _SAMPLE_EPOCH + frac * duration_s
     # N/U/E derived from lat/lon deltas (approximate metres)
     dlat = np.gradient(np.radians(lat)) * 6_371_000.0
     dlon = np.gradient(np.radians(lon)) * 6_371_000.0 * np.cos(np.radians(lat))
@@ -600,20 +631,21 @@ def _flight_rows(
 
 
 def sample_llh_3col() -> pd.DataFrame:
-    """Sample 3-col LLH data: three aircraft on realistic flight paths.
+    """Sample 3-col LLH data: three aircraft on realistic, SMOOTH flight paths.
 
     * KAL7701+HL8201 — Incheon -> over Seoul -> Busan (~370 km + leg)
     * JJA102+HL8052  — Seoul -> Jeju (~450 km)
     * KAL9903+HL8275 — Daegu -> Gwangju (~200 km)
 
-    Great-circle (slerp) interpolation with a slight lateral curve,
-    climb/cruise/descent altitude profiles (cruise 9000-10500 m), and
-    timestamps spread over one hour.  ~300 points per aircraft.
+    Great-circle (slerp) interpolation with a per-flight lateral curve,
+    smooth climb/cruise/descent altitude profiles (cruise 9000-10500 m),
+    GPS-level (~1 m) per-point position noise, and timestamps paced by a
+    nominal 720 km/h ground speed.  Point density is consistent: the
+    median step is ~1.75 km for every aircraft.
     """
     rng = np.random.default_rng(42)
-    sizes = [310, 290, 300]
     return pd.concat(
-        [_flight_rows(r, n, rng) for r, n in zip(_FLIGHT_ROUTES, sizes)],
+        [_flight_rows(r, rng) for r in _FLIGHT_ROUTES],
         ignore_index=True,
     )
 

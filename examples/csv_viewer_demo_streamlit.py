@@ -34,6 +34,7 @@ import streamlit as st
 from data_viz_kit.csv_viewer import load_csv  # noqa: F401  (reuse-style reference)
 
 from llh_utils import (
+    build_identifier_color_map,
     build_llh,
     detect_llh_layout,
     make_3d_space_figure,
@@ -310,12 +311,6 @@ def main() -> None:
         st.warning("No rows match the selected time window and identifiers.")
     elif coord_mode == "LLH":
         # ---- LLH trajectory-viewer sidebar options --------------------------
-        color_by_altitude = st.sidebar.toggle(
-            "Color markers by altitude", value=True,
-            help="Marker colour scales with altitude (Viridis colorbar, "
-                 "shared across identifiers). When off, markers are "
-                 "identifier-coloured.",
-        )
         projection = st.sidebar.selectbox(
             "Globe projection", PROJECTIONS, index=0,
         )
@@ -326,16 +321,17 @@ def main() -> None:
         )
         globe_df = filtered.dropna(subset=["lat_deg", "lon_deg"])
         ids = sorted(globe_df["_identifier"].unique())
-        # ---- tabs: globe / flat map / 3D space / altitude profile -----------
-        tab_globe, tab_map, tab_3d, tab_prof = st.tabs(
-            ["Globe", "Flat map", "3D space", "Altitude profile"]
-        )
-        with tab_globe:
+        # one shared identifier->colour mapping across ALL views so each
+        # identifier keeps the same colour everywhere
+        color_map = build_identifier_color_map(ids)
+        # ---- row 1: globe (left) + flat map (right) --------------------------
+        col_globe, col_map = st.columns(2)
+        with col_globe:
             st.plotly_chart(
                 make_globe_figure(
                     globe_df, ids, time_col,
                     f"Trajectory globe ({projection})",
-                    color_by_altitude=color_by_altitude,
+                    color_map=color_map,
                     projection=projection,
                     fit_bounds=fit_bounds,
                 ),
@@ -346,26 +342,28 @@ def main() -> None:
                 "zoom. Hover a point for identifier, timestamp, UTC time and "
                 "exact lat/lon/alt. Markers only — no connecting lines."
             )
-        with tab_map:
+        with col_map:
             st.plotly_chart(
                 make_flat_map_figure(
                     globe_df, ids, time_col,
                     "Top-down trajectory map (equirectangular)",
-                    color_by_altitude=color_by_altitude,
+                    color_map=color_map,
                     fit_bounds=fit_bounds,
                 ),
                 use_container_width=True,
             )
             st.caption(
                 "Classic top-down view of the same trajectories — pure "
-                "point display, coloured by altitude or identifier."
+                "point display, identifier-coloured."
             )
-        with tab_3d:
+        # ---- row 2: 3D space (left) + altitude profile (right) ---------------
+        col_3d, col_prof = st.columns(2)
+        with col_3d:
             st.plotly_chart(
                 make_3d_space_figure(
                     globe_df, ids, time_col,
                     "3D space view (lat/lon/alt)",
-                    color_by_altitude=color_by_altitude,
+                    color_map=color_map,
                 ),
                 use_container_width=True,
             )
@@ -373,11 +371,12 @@ def main() -> None:
                 "True 3-D scatter: x = lon, y = lat, z = alt_m. Drag to "
                 "rotate and inspect the vertical structure in space."
             )
-        with tab_prof:
+        with col_prof:
             st.plotly_chart(
                 make_altitude_profile_figure(
                     globe_df, ids, time_col,
                     "Altitude vs along-track distance",
+                    color_map=color_map,
                 ),
                 use_container_width=True,
             )

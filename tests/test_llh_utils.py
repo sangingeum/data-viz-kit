@@ -186,11 +186,11 @@ def test_sample_llh_3col_flight_paths() -> None:
     for ident in ids:
         station, sensor = ident.split("+")
         sub = df[(df["station"] == station) & (df["sensor"] == sensor)]
-        assert 200 <= len(sub) <= 400, f"{ident}: {len(sub)} points"
+        assert 80 <= len(sub) <= 300, f"{ident}: {len(sub)} points"
         lat_span = sub["Latitude"].max() - sub["Latitude"].min()
         lon_span = sub["Longitude"].max() - sub["Longitude"].min()
         assert max(lat_span, lon_span) > 0.5, f"{ident} must travel"
-        assert sub["Altitude_m"].max() > 8000.0, f"{ident} must reach cruise"
+        assert sub["Altitude_m"].max() > 3000.0, f"{ident} must reach cruise"
         ts = np.sort(sub["Timestamp"].to_numpy())
         assert ts[-1] - ts[0] <= 3600.0 + 30.0  # ~one hour of flight
         assert (sub["Altitude_m"] > 0).all()
@@ -213,7 +213,58 @@ def test_sample_csv_has_llh_columns() -> None:
               "Latitude", "Longitude", "Altitude_m",
               "LatDeg", "LatMin", "LatSec", "LonDeg", "LonMin", "LonSec"):
         assert c in csv.columns, f"missing column {c}"
-    assert 850 <= len(csv) <= 950
+    assert 450 <= len(csv) <= 700
+
+
+def _smoothness_stats(csv: pd.DataFrame) -> dict[str, dict[str, float]]:
+    """Per-station polyfit residual std (deg) and max altitude jump (m)."""
+    stats: dict[str, dict[str, float]] = {}
+    for ident, sub in csv.groupby("station"):
+        sub = sub.sort_values("Timestamp")
+        t = sub["Timestamp"].to_numpy(dtype=float)
+        s: dict[str, float] = {}
+        for col in ("Latitude", "Longitude"):
+            coeffs = np.polyfit(t - t[0], sub[col].to_numpy(dtype=float), 3)
+            resid = sub[col].to_numpy(dtype=float) - np.polyval(coeffs, t - t[0])
+            s[f"{col.lower()}_resid_std_deg"] = float(resid.std())
+        s["max_alt_jump_m"] = float(
+            np.abs(np.diff(sub["Altitude_m"].to_numpy(dtype=float))).max()
+        )
+        stats[str(ident)] = s
+    return stats
+
+
+def test_sample_trajectories_are_smooth() -> None:
+    """Smooth generator: polyfit residual std < 0.005 deg, alt jumps < 100 m."""
+    csv = pd.read_csv(EXAMPLES_DIR / "sample_data.csv")
+    stats = _smoothness_stats(csv)
+    assert stats, "expected three identifiers"
+    for ident, s in stats.items():
+        assert s["latitude_resid_std_deg"] < 0.005, (
+            f"{ident} lat residual std {s['latitude_resid_std_deg']:.4f} deg"
+        )
+        assert s["longitude_resid_std_deg"] < 0.005, (
+            f"{ident} lon residual std {s['longitude_resid_std_deg']:.4f} deg"
+        )
+        assert s["max_alt_jump_m"] < 100.0, (
+            f"{ident} max altitude jump {s['max_alt_jump_m']:.1f} m"
+        )
+
+
+def test_sample_point_spacing_consistent() -> None:
+    """Median step spacing within 0.5-4 km for every aircraft."""
+    csv = pd.read_csv(EXAMPLES_DIR / "sample_data.csv")
+    R = 6371.0088
+    for ident, sub in csv.groupby("station"):
+        sub = sub.sort_values("Timestamp")
+        lat = np.radians(sub["Latitude"].to_numpy(dtype=float))
+        lon = np.radians(sub["Longitude"].to_numpy(dtype=float))
+        dlat, dlon = np.diff(lat), np.diff(lon)
+        a = (np.sin(dlat / 2) ** 2
+             + np.cos(lat[:-1]) * np.cos(lat[1:]) * np.sin(dlon / 2) ** 2)
+        steps = R * 2 * np.arcsin(np.sqrt(np.clip(a, 0.0, 1.0)))
+        median = float(np.median(steps))
+        assert 0.5 <= median <= 4.0, f"{ident} median step {median:.3f} km"
 
 # ---- figure builders (headless) -------------------------------------------
 
@@ -253,7 +304,7 @@ def test_trajectory_traces_are_markers_only_sorted_by_time() -> None:
     """Every identifier draws a markers-only path, points sorted by timestamp."""
     df = _figure_df().sort_values("Timestamp", ascending=False)  # shuffled input
     fig = make_globe_figure(df, sorted(df["_identifier"].unique()), "Timestamp",
-                            "globe", color_by_altitude=False)
+                            "globe")
     traces = [t for t in fig.data if t.type == "scattergeo"]
     assert traces
     for trace in traces:
@@ -264,27 +315,42 @@ def test_trajectory_traces_are_markers_only_sorted_by_time() -> None:
         )
 
 
-def test_trajectory_color_by_altitude_toggle() -> None:
-    """Toggle ON: markers carry a Viridis colorbar; OFF: identifier-coloured."""
+def test_identifier_colors_consistent_across_all_views() -> None:
+    """Each identifier keeps ONE colour in globe, flat map, 3D, and profile."""
+    from llh_utils import build_identifier_color_map
+
     df = _figure_df()
     ids = sorted(df["_identifier"].unique())
-    fig_on = make_globe_figure(df, ids, "Timestamp", "globe",
-                               color_by_altitude=True)
-    traces = [t for t in fig_on.data if t.type == "scattergeo"]
-    assert traces
-    for t in traces:
-        assert t.mode == "markers"
-        assert t.marker.showscale and t.marker.colorscale is not None, (
-            "expected colorscale + colorbar on altitude-coloured markers"
-        )
-        assert t.marker.cmin == pytest.approx(df["alt_m"].min())
-        assert t.marker.cmax == pytest.approx(df["alt_m"].max())
+    color_map = build_identifier_color_map(ids)
+    assert len(color_map) == len(ids)
+    # same identifier always maps to the same colour, order-independent
+    assert build_identifier_color_map(list(reversed(ids))) == color_map
 
-    fig_off = make_globe_figure(df, ids, "Timestamp", "globe",
-                                color_by_altitude=False)
-    for t in fig_off.data:
-        assert t.mode == "markers"
-        assert not t.marker.showscale
+    fig_globe = make_globe_figure(df, ids, "Timestamp", "g", color_map=color_map)
+    fig_flat = make_flat_map_figure(df, ids, "Timestamp", "f", color_map=color_map)
+    fig_3d = make_3d_space_figure(df, ids, "Timestamp", "3d", color_map=color_map)
+    fig_prof = make_altitude_profile_figure(
+        df, ids, "Timestamp", "p", color_map=color_map
+    )
+    for fig in (fig_globe, fig_flat, fig_3d, fig_prof):
+        seen = {t.name: t.marker.color for t in fig.data if t.name in color_map}
+        assert seen == color_map, f"colour mismatch in {type(fig.data[0]).type}"
+    # no altitude-driven colour scale remains anywhere
+    for fig in (fig_globe, fig_flat, fig_3d, fig_prof):
+        for t in fig.data:
+            assert not t.marker.showscale
+            assert t.marker.colorscale is None
+
+
+def test_trajectory_identifier_colors_default_consistent() -> None:
+    """Without an explicit color_map, default palette colours are stable."""
+    df = _figure_df()
+    ids = sorted(df["_identifier"].unique())
+    f1 = make_globe_figure(df, ids, "Timestamp", "g")
+    f2 = make_3d_space_figure(df, ids, "Timestamp", "3d")
+    colors_g = {t.name: t.marker.color for t in f1.data}
+    colors_3 = {t.name: t.marker.color for t in f2.data}
+    assert colors_g == colors_3
 
 
 def test_trajectory_hover_template() -> None:
@@ -321,13 +387,13 @@ def test_trajectory_projection_selectable() -> None:
         assert fig.layout.geo.projection.type == proj
 
 
-def test_flat_map_figure_is_equirectangular_no_colorbar() -> None:
+def test_flat_map_figure_is_equirectangular() -> None:
     df = _figure_df()
     fig = make_flat_map_figure(df, sorted(df["_identifier"].unique()),
                                "Timestamp", "flat")
     assert fig.layout.geo.projection.type == "equirectangular"
-    assert not any(t.marker.showscale for t in fig.data)
     assert all(t.mode == "markers" for t in fig.data)
+    assert not any(t.marker.showscale for t in fig.data)
 
 
 # ---- new trajectory views ---------------------------------------------------
@@ -345,10 +411,7 @@ def test_3d_space_figure_markers_only_customdata() -> None:
         # z is altitude, matching actual points
         assert np.allclose(np.asarray(t.z, dtype=float),
                            cd[:, 2].astype(float))
-    assert any(t.marker.showscale for t in fig.data)
-    fig_off = make_3d_space_figure(df, ids, "Timestamp", "3d",
-                                   color_by_altitude=False)
-    assert all(not t.marker.showscale for t in fig_off.data)
+    assert not any(t.marker.showscale for t in fig.data)
     assert any(t.hovertemplate for t in fig.data)
 
 
