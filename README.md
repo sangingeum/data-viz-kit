@@ -143,14 +143,16 @@ Readability options in the sidebar:
 Hover on any point keeps the identifier, the timestamp, its UTC date-time, and
 the exact converted lat/lon/alt (per-point customdata).
 
-The bundled `examples/sample_data.csv` carries extra LLH columns (3-col
-`Latitude`/`Longitude`/`Altitude_m` and 7-col `LatDeg…LonSec`) around Seoul
-(37.5N, 127.0E) — the demo works in LLH mode without uploading anything;
-existing N/U/E columns are unchanged. The sample trajectories are **smooth**:
-per-flight lateral curve offsets, GPS-level (~1 m) position noise, a smooth
-climb/cruise/descent altitude envelope (~5 m noise, no >100 m jumps), and a
-consistent ~1.75 km median point spacing for all three aircraft
-(regenerate with `scripts/regenerate_sample.py`).
+The bundled `examples/sample_data.csv` contains **real ADS-B flight data**
+(Kaggle OpenSky dataset, Atlanta airspace): 3 aircraft (N2QU, N369PD, N46CL),
+~200 deduplicated points each.  Columns: identifier (`station`=callsign,
+`sensor`=icao24), `Timestamp` (epoch s, rebased onto a shared window),
+N/U/E derived from LLH via **WGS84 ENU conversion** (`llh_to_nue`, base =
+mean lat/lon of the sample), 3-col LLH (`Latitude`/`Longitude`/`Altitude_m`
+from baroaltitude), and 7-col DMS (`LatDeg…LonSec`, seconds stored ×100 —
+use the 0.01 seconds-scale option; signs live in the 3-col column).
+Regenerate with `scripts/extract_kaggle_sample.py` (source path configurable;
+~2.5 GB Kaggle CSV not included in the repo).
 
 ## License
 

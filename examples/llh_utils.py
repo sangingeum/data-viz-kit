@@ -24,6 +24,83 @@ import plotly.graph_objects as go
 
 COORD_MODES: list[str] = ["NUE", "LLH"]
 
+#: WGS84 ellipsoid parameters
+_WGS84_A = 6_378_137.0            # semi-major axis (m)
+_WGS84_F = 1.0 / 298.257223563    # flattening
+_WGS84_E2 = _WGS84_F * (2.0 - _WGS84_F)  # first eccentricity squared
+
+
+def geodetic_to_ecef(
+    lat_deg: "np.ndarray | float",
+    lon_deg: "np.ndarray | float",
+    alt_m: "np.ndarray | float",
+) -> tuple["np.ndarray", "np.ndarray", "np.ndarray"]:
+    """Geodetic (WGS84) lat/lon/alt -> ECEF x/y/z, vectorized.
+
+    Args:
+        lat_deg: geodetic latitude in decimal degrees.
+        lon_deg: geodetic longitude in decimal degrees.
+        alt_m: altitude above the WGS84 ellipsoid in metres.
+
+    Returns:
+        Tuple ``(x, y, z)`` of ECEF coordinates in metres (numpy arrays or
+        floats matching the broadcast input shapes).
+    """
+    lat = np.radians(np.asarray(lat_deg, dtype=float))
+    lon = np.radians(np.asarray(lon_deg, dtype=float))
+    h = np.asarray(alt_m, dtype=float)
+    sin_lat = np.sin(lat)
+    cos_lat = np.cos(lat)
+    n = _WGS84_A / np.sqrt(1.0 - _WGS84_E2 * sin_lat * sin_lat)
+    x = (n + h) * cos_lat * np.cos(lon)
+    y = (n + h) * cos_lat * np.sin(lon)
+    z = (n * (1.0 - _WGS84_E2) + h) * sin_lat
+    return x, y, z
+
+
+def llh_to_nue(
+    lat_deg: "np.ndarray | float",
+    lon_deg: "np.ndarray | float",
+    alt_m: "np.ndarray | float",
+    base_lat_deg: float,
+    base_lon_deg: float,
+    base_alt_m: float = 0.0,
+) -> tuple["np.ndarray", "np.ndarray", "np.ndarray"]:
+    """Local tangent-plane N/U/E coordinates relative to a base LLH.
+
+    Proper ENU conversion: geodetic-to-ECEF (WGS84), then ECEF-to-ENU
+    rotated by the base latitude/longitude.  ``N`` points true north,
+    ``E`` true east, and ``U`` up along the ellipsoid normal at the base
+    point.  The base altitude defaults to 0 (ellipsoid surface at the
+    base lat/lon); offsets in ``U`` are relative to it either way.
+
+    Args:
+        lat_deg: geodetic latitude(s) in decimal degrees.
+        lon_deg: geodetic longitude(s) in decimal degrees.
+        alt_m: altitude(s) above the WGS84 ellipsoid in metres.
+        base_lat_deg: tangent-plane origin latitude (decimal degrees).
+        base_lon_deg: tangent-plane origin longitude (decimal degrees).
+        base_alt_m: tangent-plane origin altitude (metres), default 0.
+
+    Returns:
+        Tuple ``(N, U, E)`` in metres, broadcast to the input shape.
+    """
+    x, y, z = geodetic_to_ecef(lat_deg, lon_deg, alt_m)
+    bx, by, bz = geodetic_to_ecef(base_lat_deg, base_lon_deg, base_alt_m)
+    dx = np.asarray(x, dtype=float) - float(bx)
+    dy = np.asarray(y, dtype=float) - float(by)
+    dz = np.asarray(z, dtype=float) - float(bz)
+    lat0 = np.radians(base_lat_deg)
+    lon0 = np.radians(base_lon_deg)
+    sin_lat, cos_lat = np.sin(lat0), np.cos(lat0)
+    sin_lon, cos_lon = np.sin(lon0), np.cos(lon0)
+    # ENU rotation matrix rows: east, north, up
+    e = -sin_lon * dx + cos_lon * dy
+    n = -sin_lat * cos_lon * dx - sin_lat * sin_lon * dy + cos_lat * dz
+    u = cos_lat * cos_lon * dx + cos_lat * sin_lon * dy + sin_lat * dz
+    return n, u, e
+
+
 #: candidate column-name fragments, lower-cased, matched with ``str.contains``
 _LAT_PAT = ("latitude", "lat")
 _LON_PAT = ("longitude", "lon", "lng")

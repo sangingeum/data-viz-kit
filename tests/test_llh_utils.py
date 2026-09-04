@@ -18,6 +18,8 @@ from llh_utils import (  # noqa: E402
     coerce_numeric,
     detect_llh_layout,
     dms_to_decimal_degrees,
+    geodetic_to_ecef,
+    llh_to_nue,
     make_3d_space_figure,
     make_altitude_profile_figure,
     make_flat_map_figure,
@@ -213,7 +215,10 @@ def test_sample_csv_has_llh_columns() -> None:
               "Latitude", "Longitude", "Altitude_m",
               "LatDeg", "LatMin", "LatSec", "LonDeg", "LonMin", "LonSec"):
         assert c in csv.columns, f"missing column {c}"
-    assert 450 <= len(csv) <= 700
+    # real Kaggle flights: 3 aircraft, >= 30 distinct positions each
+    assert csv["station"].nunique() == 3
+    counts = csv.groupby("station").size()
+    assert (counts >= 30).all(), f"too few points: {counts.to_dict()}"
 
 
 def _smoothness_stats(csv: pd.DataFrame) -> dict[str, dict[str, float]]:
@@ -235,24 +240,36 @@ def _smoothness_stats(csv: pd.DataFrame) -> dict[str, dict[str, float]]:
 
 
 def test_sample_trajectories_are_smooth() -> None:
-    """Smooth generator: polyfit residual std < 0.005 deg, alt jumps < 100 m."""
+    """REAL flight data: modest wiggle is physical.  Bounds are loose:
+    polyfit residual std < 0.05 deg (~5 km) and alt jumps < 4 km (climbs
+    between sparse ADS-B reports are genuine, not noise)."""
     csv = pd.read_csv(EXAMPLES_DIR / "sample_data.csv")
     stats = _smoothness_stats(csv)
     assert stats, "expected three identifiers"
     for ident, s in stats.items():
-        assert s["latitude_resid_std_deg"] < 0.005, (
+        assert s["latitude_resid_std_deg"] < 0.05, (
             f"{ident} lat residual std {s['latitude_resid_std_deg']:.4f} deg"
         )
-        assert s["longitude_resid_std_deg"] < 0.005, (
+        assert s["longitude_resid_std_deg"] < 0.05, (
             f"{ident} lon residual std {s['longitude_resid_std_deg']:.4f} deg"
         )
-        assert s["max_alt_jump_m"] < 100.0, (
+        assert s["max_alt_jump_m"] < 4000.0, (
             f"{ident} max altitude jump {s['max_alt_jump_m']:.1f} m"
         )
 
 
+def test_sample_trajectories_move() -> None:
+    """Each aircraft actually travels (span > 0.01 deg on lat or lon)."""
+    csv = pd.read_csv(EXAMPLES_DIR / "sample_data.csv")
+    for ident, sub in csv.groupby("station"):
+        lat_span = sub["Latitude"].max() - sub["Latitude"].min()
+        lon_span = sub["Longitude"].max() - sub["Longitude"].min()
+        assert max(lat_span, lon_span) > 0.01, f"{ident} did not move"
+
+
 def test_sample_point_spacing_consistent() -> None:
-    """Median step spacing within 0.5-4 km for every aircraft."""
+    """Median step spacing within 0.01-10 km for every aircraft (real ADS-B:
+    slow taxi phases give tiny steps, that is genuine data)."""
     csv = pd.read_csv(EXAMPLES_DIR / "sample_data.csv")
     R = 6371.0088
     for ident, sub in csv.groupby("station"):
@@ -264,7 +281,93 @@ def test_sample_point_spacing_consistent() -> None:
              + np.cos(lat[:-1]) * np.cos(lat[1:]) * np.sin(dlon / 2) ** 2)
         steps = R * 2 * np.arcsin(np.sqrt(np.clip(a, 0.0, 1.0)))
         median = float(np.median(steps))
-        assert 0.5 <= median <= 4.0, f"{ident} median step {median:.3f} km"
+        assert 0.01 <= median <= 10.0, f"{ident} median step {median:.3f} km"
+
+
+def test_sample_dms_roundtrip() -> None:
+    """7-col DMS (seconds x100, scale 0.01) round-trips to the 3-col LLH.
+
+    DMS columns store positive magnitudes; the sign comes from the 3-col
+    column (western longitudes -> negative).
+    """
+    csv = pd.read_csv(EXAMPLES_DIR / "sample_data.csv")
+    lat_rt = csv["LatDeg"] + csv["LatMin"] / 60 + csv["LatSec"] * 0.01 / 3600
+    lon_rt = csv["LonDeg"] + csv["LonMin"] / 60 + csv["LonSec"] * 0.01 / 3600
+    lat_mag = csv["Latitude"].abs()
+    lon_mag = csv["Longitude"].abs()
+    assert np.allclose(lat_rt, lat_mag, atol=1e-6)
+    assert np.allclose(lon_rt, lon_mag, atol=1e-6)
+    # sign convention: southern lat / western lon negative in the 3-col data
+    assert (csv["Latitude"] >= 0).all()  # Atlanta sample: northern hemisphere
+    assert (csv["Longitude"] <= 0).all()  # western hemisphere
+
+# ---- ENU conversion (llh_to_nue) --------------------------------------------
+
+
+def test_llh_to_nue_one_degree_north_is_111km() -> None:
+    """Base (0,0): point 1 deg north is ~111.19 km north, 0 east, ~0 up."""
+    n, u, e = llh_to_nue(np.array([1.0]), np.array([0.0]), np.array([0.0]),
+                         0.0, 0.0)
+    assert n[0] == pytest.approx(110_574.0, rel=3e-3)  # 1 deg meridian arc
+    assert e[0] == pytest.approx(0.0, abs=1e-6)
+    # 1 deg of meridian arc dips ~ -1 km below the tangent plane (expected)
+    assert u[0] == pytest.approx(0.0, abs=2_000.0)
+
+
+def test_llh_to_nue_one_degree_east_is_111km() -> None:
+    """Base (0,0): point 1 deg east on the equator is ~111.32 km east."""
+    n, u, e = llh_to_nue(np.array([0.0]), np.array([1.0]), np.array([0.0]),
+                         0.0, 0.0)
+    assert e[0] == pytest.approx(111_319.5, rel=1e-4)
+    assert n[0] == pytest.approx(0.0, abs=1e-6)
+    assert u[0] == pytest.approx(-971.42, abs=1.0)  # tangent-plane sagitta
+
+
+def test_llh_to_nue_up_is_altitude_offset() -> None:
+    """Same lat/lon as base, 1000 m higher -> U = 1000, N = E = 0."""
+    n, u, e = llh_to_nue(np.array([37.5]), np.array([127.0]),
+                         np.array([1000.0]), 37.5, 127.0)
+    assert u[0] == pytest.approx(1000.0, rel=1e-6)
+    assert n[0] == pytest.approx(0.0, abs=1e-6)
+    assert e[0] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_llh_to_nue_base_point_is_origin() -> None:
+    n, u, e = llh_to_nue(37.5, 127.0, 500.0, 37.5, 127.0, 500.0)
+    assert (n, u, e) == (pytest.approx(0.0, abs=1e-9),) * 3
+
+
+def test_llh_to_nue_scalar_input() -> None:
+    """Scalar inputs return scalars (floats), not arrays."""
+    n, u, e = llh_to_nue(1.0, 0.0, 0.0, 0.0, 0.0)
+    assert isinstance(n, float) and isinstance(e, float)
+    assert n == pytest.approx(110_574.0, rel=3e-3)
+
+
+def test_llh_to_nue_matches_ecef_roundtrip() -> None:
+    """llh_to_nue is consistent with geodetic_to_ecef at the base point."""
+    base = (48.8566, 2.3522, 35.0)
+    bx, by, bz = geodetic_to_ecef(*base)
+    n, u, e = llh_to_nue(np.array([base[0]]), np.array([base[1]]),
+                         np.array([base[2]]), *base)
+    # zero offsets at the base
+    assert abs(n[0]) < 1e-6 and abs(e[0]) < 1e-6 and abs(u[0]) < 1e-6
+    # and a displaced point reconstructs the right ECEF delta magnitude
+    n2, u2, e2 = llh_to_nue(np.array([base[0] + 0.01]), np.array([base[1] + 0.01]),
+                            np.array([base[2] + 100.0]), *base)
+    delta = np.sqrt(n2[0] ** 2 + e2[0] ** 2 + u2[0] ** 2)
+    px, py, pz = geodetic_to_ecef(base[0] + 0.01, base[1] + 0.01, base[2] + 100.0)
+    ecef_delta = np.sqrt((px - bx) ** 2 + (py - by) ** 2 + (pz - bz) ** 2)
+    assert delta == pytest.approx(ecef_delta, rel=1e-9)  # rotation is orthonormal
+
+
+def test_llh_to_nue_north_direction_at_high_latitude() -> None:
+    """At 60N, going north 0.5 deg increases N (~55.7 km) and leaves E at 0."""
+    n, u, e = llh_to_nue(np.array([60.5]), np.array([0.0]), np.array([0.0]),
+                         60.0, 0.0)
+    assert e[0] == pytest.approx(0.0, abs=1e-6)
+    assert n[0] == pytest.approx(55_708.0, rel=5e-3)
+
 
 # ---- figure builders (headless) -------------------------------------------
 
